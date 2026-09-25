@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from types import TracebackType
 from typing import Final
@@ -17,7 +17,7 @@ from urllib.parse import quote
 import httpx
 
 from wiki_trends.cache import CacheNamespace, CacheRetrieval, FilesystemCache, pageviews_ttl
-from wiki_trends.models import MonthlyPageview, ObservationStatus
+from wiki_trends.models import Granularity, MonthlyPageview, ObservationStatus
 
 __all__ = [
     "WikimediaError",
@@ -134,10 +134,12 @@ class WikimediaPageviewsClient:
         self,
         project: str,
         article: str,
-        start_month: str,
-        end_month: str,
+        start_month: str | date,
+        end_month: str | date,
+        *,
+        granularity: Granularity = Granularity.MONTHLY,
     ) -> list[MonthlyPageview]:
-        """Return one observation for every requested calendar month.
+        """Return one observation for each requested day or calendar month.
 
         ``start_month`` and ``end_month`` accept ``YYYY-MM`` or a first-day
         ISO date (``YYYY-MM-01``).  Missing API records are represented as
@@ -150,46 +152,49 @@ class WikimediaPageviewsClient:
             WikimediaUnavailableError: If timeout, transport, or 5xx retries fail.
             WikimediaError: If Wikimedia returns another error or malformed data.
         """
-        return self.get_article_pageviews_result(project, article, start_month, end_month).observations
+        return self.get_article_pageviews_result(
+            project,
+            article,
+            start_month,
+            end_month,
+            granularity=granularity,
+        ).observations
 
     def get_article_pageviews_result(
         self,
         project: str,
         article: str,
-        start_month: str,
-        end_month: str,
+        start_month: str | date,
+        end_month: str | date,
+        *,
+        granularity: Granularity = Granularity.MONTHLY,
     ) -> PageviewsFetchResult:
         """Return article pageviews with explicit provenance for report sources."""
         validated_project = _require_nonblank_text(project, "project")
         validated_article = _require_nonblank_text(article, "article")
-        start = _parse_month(start_month, "start_month")
-        end = _parse_month(end_month, "end_month")
+        start, end = _parse_period(start_month, end_month, granularity)
         if end < start:
             raise ValueError("'end_month' must not be earlier than 'start_month'")
-        fields = _article_cache_fields(validated_project, validated_article, start, end)
-        cached = self._load_cached_observations(CacheNamespace.ARTICLE_PAGEVIEWS, fields, start, end)
+        fields = _article_cache_fields(validated_project, validated_article, start, end, granularity)
+        cached = self._load_cached_observations(CacheNamespace.ARTICLE_PAGEVIEWS, fields, start, end, granularity)
         if cached is not None:
             return PageviewsFetchResult(cached, "cache")
 
         payload = _response_payload(
-            self._get_with_retries(_build_endpoint(validated_project, validated_article, start, end))
+            self._get_with_retries(_build_endpoint(validated_project, validated_article, start, end, granularity))
         )
-        observations = _parse_observation_payload(payload)
+        observations = _parse_observation_payload(payload, granularity)
         self._store_payload(CacheNamespace.ARTICLE_PAGEVIEWS, fields, payload)
-        completed_observations = [
-            observations.get(
-                month,
-                MonthlyPageview(month=month, status=ObservationStatus.UNKNOWN),
-            )
-            for month in _months_inclusive(start, end)
-        ]
+        completed_observations = _complete_observation_range(observations, start, end, granularity)
         return PageviewsFetchResult(completed_observations, "network")
 
     def get_project_pageviews(
         self,
         project: str,
-        start_month: str,
-        end_month: str,
+        start_month: str | date,
+        end_month: str | date,
+        *,
+        granularity: Granularity = Granularity.MONTHLY,
     ) -> list[MonthlyPageview]:
         """Return one project-total observation for every requested calendar month.
 
@@ -214,32 +219,37 @@ class WikimediaPageviewsClient:
             WikimediaUnavailableError: If timeout, transport, or 5xx retries fail.
             WikimediaError: If Wikimedia returns another error or malformed data.
         """
-        return self.get_project_pageviews_result(project, start_month, end_month).observations
+        return self.get_project_pageviews_result(
+            project,
+            start_month,
+            end_month,
+            granularity=granularity,
+        ).observations
 
     def get_project_pageviews_result(
         self,
         project: str,
-        start_month: str,
-        end_month: str,
+        start_month: str | date,
+        end_month: str | date,
+        *,
+        granularity: Granularity = Granularity.MONTHLY,
     ) -> PageviewsFetchResult:
         """Return project totals with provenance for normalized-interest sources."""
         validated_project = _require_nonblank_text(project, "project")
-        start = _parse_month(start_month, "start_month")
-        end = _parse_month(end_month, "end_month")
+        start, end = _parse_period(start_month, end_month, granularity)
         if end < start:
             raise ValueError("'end_month' must not be earlier than 'start_month'")
-        fields = _project_cache_fields(validated_project, start, end)
-        cached = self._load_cached_observations(CacheNamespace.PROJECT_PAGEVIEWS, fields, start, end)
+        fields = _project_cache_fields(validated_project, start, end, granularity)
+        cached = self._load_cached_observations(CacheNamespace.PROJECT_PAGEVIEWS, fields, start, end, granularity)
         if cached is not None:
             return PageviewsFetchResult(cached, "cache")
 
-        payload = _response_payload(self._get_with_retries(_build_project_endpoint(validated_project, start, end)))
-        observations = _parse_observation_payload(payload)
+        payload = _response_payload(
+            self._get_with_retries(_build_project_endpoint(validated_project, start, end, granularity))
+        )
+        observations = _parse_observation_payload(payload, granularity)
         self._store_payload(CacheNamespace.PROJECT_PAGEVIEWS, fields, payload)
-        completed_observations = [
-            observations.get(month, MonthlyPageview(month=month, status=ObservationStatus.UNKNOWN))
-            for month in _months_inclusive(start, end)
-        ]
+        completed_observations = _complete_observation_range(observations, start, end, granularity)
         return PageviewsFetchResult(completed_observations, "network")
 
     def _load_cached_observations(
@@ -248,19 +258,17 @@ class WikimediaPageviewsClient:
         fields: Mapping[str, object],
         start: date,
         end: date,
+        granularity: Granularity,
     ) -> list[MonthlyPageview] | None:
         """Read valid cached API payloads and discard malformed entries safely."""
         if self._cache is None:
             return None
-        payload = self._cache.load(namespace, fields, pageviews_ttl(end))
+        payload = self._cache.load(namespace, fields, pageviews_ttl(end, granularity=granularity))
         if payload is None:
             return None
         try:
-            observations = _parse_observation_payload(payload)
-            return [
-                observations.get(month, MonthlyPageview(month=month, status=ObservationStatus.UNKNOWN))
-                for month in _months_inclusive(start, end)
-            ]
+            observations = _parse_observation_payload(payload, granularity)
+            return _complete_observation_range(observations, start, end, granularity)
         except WikimediaError:
             self._cache.discard(namespace, fields)
             self._logger.warning(
@@ -326,49 +334,71 @@ class WikimediaPageviewsClient:
         self._sleep(delay_seconds)
 
 
-def _article_cache_fields(project: str, article: str, start: date, end: date) -> dict[str, str]:
+def _article_cache_fields(
+    project: str,
+    article: str,
+    start: date,
+    end: date,
+    granularity: Granularity,
+) -> dict[str, str]:
     """Return every API dimension that can alter an article pageview response."""
     return {
         "access": "all-access",
         "agent": "user",
         "article": article,
         "end": end.isoformat(),
-        "granularity": "monthly",
+        "granularity": granularity.value,
         "project": project,
         "start": start.isoformat(),
     }
 
 
-def _project_cache_fields(project: str, start: date, end: date) -> dict[str, str]:
+def _project_cache_fields(
+    project: str,
+    start: date,
+    end: date,
+    granularity: Granularity,
+) -> dict[str, str]:
     """Return every API dimension that can alter a project pageview response."""
     return {
         "access": "all-access",
         "agent": "user",
         "end": end.isoformat(),
-        "granularity": "monthly",
+        "granularity": granularity.value,
         "project": project,
         "start": start.isoformat(),
     }
 
 
-def _build_endpoint(project: str, article: str, start: date, end: date) -> str:
-    """Build the exact AQS per-article monthly endpoint for a date range."""
+def _build_endpoint(project: str, article: str, start: date, end: date, granularity: Granularity) -> str:
+    """Build the exact AQS per-article endpoint for a daily or monthly range."""
     encoded_project = quote(project, safe=".-")
     encoded_article = quote(article.replace(" ", "_"), safe="")
-    start_timestamp = f"{start:%Y%m}0100"
-    end_timestamp = f"{end:%Y%m}{calendar.monthrange(end.year, end.month)[1]:02d}00"
+    if granularity is Granularity.DAILY:
+        start_timestamp = f"{start:%Y%m%d}"
+        end_timestamp = f"{end:%Y%m%d}"
+    else:
+        start_timestamp = f"{start:%Y%m}0100"
+        end_timestamp = f"{end:%Y%m}{calendar.monthrange(end.year, end.month)[1]:02d}00"
     return (
-        f"{_ARTICLE_API_BASE_URL}/{encoded_project}/all-access/user/{encoded_article}/monthly/"
+        f"{_ARTICLE_API_BASE_URL}/{encoded_project}/all-access/user/{encoded_article}/{granularity.value}/"
         f"{start_timestamp}/{end_timestamp}"
     )
 
 
-def _build_project_endpoint(project: str, start: date, end: date) -> str:
-    """Build the exact AQS aggregate monthly endpoint for a date range."""
+def _build_project_endpoint(project: str, start: date, end: date, granularity: Granularity) -> str:
+    """Build the exact AQS aggregate endpoint for a daily or monthly range."""
     encoded_project = quote(project, safe=".-")
-    start_timestamp = f"{start:%Y%m}0100"
-    end_timestamp = f"{end:%Y%m}{calendar.monthrange(end.year, end.month)[1]:02d}00"
-    return f"{_PROJECT_API_BASE_URL}/{encoded_project}/all-access/user/monthly/{start_timestamp}/{end_timestamp}"
+    if granularity is Granularity.DAILY:
+        start_timestamp = f"{start:%Y%m%d}"
+        end_timestamp = f"{end:%Y%m%d}"
+    else:
+        start_timestamp = f"{start:%Y%m}0100"
+        end_timestamp = f"{end:%Y%m}{calendar.monthrange(end.year, end.month)[1]:02d}00"
+    return (
+        f"{_PROJECT_API_BASE_URL}/{encoded_project}/all-access/user/{granularity.value}/"
+        f"{start_timestamp}/{end_timestamp}"
+    )
 
 
 def _response_payload(response: httpx.Response) -> object:
@@ -379,8 +409,8 @@ def _response_payload(response: httpx.Response) -> object:
         raise WikimediaError("Wikimedia returned invalid JSON") from error
 
 
-def _parse_observation_payload(payload: object) -> dict[date, MonthlyPageview]:
-    """Convert a network or cache API payload to records keyed by calendar month."""
+def _parse_observation_payload(payload: object, granularity: Granularity) -> dict[date, MonthlyPageview]:
+    """Convert a network or cached API payload to typed, date-keyed buckets."""
 
     if not isinstance(payload, Mapping):
         raise WikimediaError("Wikimedia response must be a JSON object")
@@ -392,46 +422,72 @@ def _parse_observation_payload(payload: object) -> dict[date, MonthlyPageview]:
     for raw_item in raw_items:
         if not isinstance(raw_item, Mapping):
             raise WikimediaError("Wikimedia response contains an invalid pageview item")
-        month = _parse_api_timestamp(raw_item.get("timestamp"))
+        timestamp = _parse_api_timestamp(raw_item.get("timestamp"), granularity)
         views = raw_item.get("views")
         if isinstance(views, bool) or not isinstance(views, int) or views < 0:
             raise WikimediaError("Wikimedia pageview item has an invalid 'views' value")
-        if month in observations:
-            raise WikimediaError(f"Wikimedia response contains duplicate month {month.isoformat()}")
-        observations[month] = MonthlyPageview(month=month, views=views)
+        if timestamp in observations:
+            raise WikimediaError(f"Wikimedia response contains duplicate timestamp {timestamp.isoformat()}")
+        observations[timestamp] = MonthlyPageview(month=timestamp, granularity=granularity, views=views)
     return observations
 
 
-def _parse_api_timestamp(value: object) -> date:
-    """Parse the first day of month encoded by Wikimedia's AQS timestamp."""
+def _parse_api_timestamp(value: object, granularity: Granularity) -> date:
+    """Parse a daily or monthly bucket encoded by Wikimedia's AQS timestamp."""
     if not isinstance(value, str) or not re.fullmatch(r"\d{10}", value):
         raise WikimediaError("Wikimedia pageview item has an invalid 'timestamp'")
     try:
         parsed = datetime.strptime(value, "%Y%m%d%H")
     except ValueError as error:
         raise WikimediaError("Wikimedia pageview item has an invalid 'timestamp'") from error
-    if parsed.day != 1 or parsed.hour != 0:
-        raise WikimediaError("Wikimedia monthly timestamp must identify the first day at 00:00")
+    if parsed.hour != 0 or (granularity is Granularity.MONTHLY and parsed.day != 1):
+        raise WikimediaError(f"Wikimedia {granularity.value} timestamp is not a valid bucket boundary")
     return parsed.date()
 
 
-def _parse_month(value: str, field_name: str) -> date:
-    """Parse one public month argument to its canonical first-day date."""
+def _parse_period(start_value: str | date, end_value: str | date, granularity: Granularity) -> tuple[date, date]:
+    """Parse a date range and normalize monthly inputs to month keys."""
+    start = _parse_date(start_value, "start_month", granularity)
+    end = _parse_date(end_value, "end_month", granularity)
+    if granularity is Granularity.MONTHLY:
+        start = date(start.year, start.month, 1)
+        end = date(end.year, end.month, 1)
+    return start, end
+
+
+def _parse_date(value: str | date, field_name: str, granularity: Granularity) -> date:
+    """Parse an ISO calendar date or legacy ``YYYY-MM`` month string."""
+    if isinstance(value, date):
+        return value
     if not isinstance(value, str):
-        raise ValueError(f"'{field_name}' must be a YYYY-MM string")
+        raise ValueError(f"'{field_name}' must be an ISO calendar date")
     match = _MONTH_PATTERN.fullmatch(value)
-    if match is not None:
+    if match is not None and granularity is Granularity.MONTHLY:
         try:
             return date(int(match["year"]), int(match["month"]), 1)
         except ValueError as error:
             raise ValueError(f"'{field_name}' must be a valid YYYY-MM month") from error
     try:
-        parsed = date.fromisoformat(value)
+        return date.fromisoformat(value)
     except ValueError as error:
-        raise ValueError(f"'{field_name}' must be YYYY-MM or YYYY-MM-01") from error
-    if parsed.day != 1:
-        raise ValueError(f"'{field_name}' must identify the first day of a month")
-    return parsed
+        raise ValueError(f"'{field_name}' must be a valid ISO calendar date") from error
+
+
+def _complete_observation_range(
+    observations: Mapping[date, MonthlyPageview],
+    start: date,
+    end: date,
+    granularity: Granularity,
+) -> list[MonthlyPageview]:
+    """Fill omitted API buckets with explicit unknowns, without imputing zeros."""
+    bucket_dates = _months_inclusive(start, end) if granularity is Granularity.MONTHLY else _days_inclusive(start, end)
+    return [
+        observations.get(
+            bucket,
+            MonthlyPageview(month=bucket, granularity=granularity, status=ObservationStatus.UNKNOWN),
+        )
+        for bucket in bucket_dates
+    ]
 
 
 def _months_inclusive(start: date, end: date) -> list[date]:
@@ -442,6 +498,11 @@ def _months_inclusive(start: date, end: date) -> list[date]:
         months.append(date(year, month, 1))
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
     return months
+
+
+def _days_inclusive(start: date, end: date) -> list[date]:
+    """Return every day in an inclusive date range, preserving order."""
+    return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
 
 
 def _require_nonblank_text(value: str, field_name: str) -> str:

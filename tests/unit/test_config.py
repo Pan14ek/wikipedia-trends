@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from wiki_trends.config import AnalysisConfig, complete_month_range
-from wiki_trends.models import MonthlyPageview, ObservationStatus
+from wiki_trends.config import AnalysisConfig, complete_month_range, latest_complete_day, resolve_period
+from wiki_trends.models import Granularity, MonthlyPageview, ObservationStatus
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -78,7 +78,6 @@ def test_topic_article_overrides_are_typed_and_bounded() -> None:
         ({"query": {"mode": "article", "value": "Astronomy"}, "languages": []}, "languages"),
         ({"query": {"mode": "article", "value": "Astronomy"}, "languages": ["uk", "uk"]}, "duplicate"),
         ({"query": {"mode": "article", "value": "Astronomy"}, "languages": ["UK"]}, "languages"),
-        ({"query": {"mode": "article", "value": "Astronomy"}, "languages": ["uk"], "period": {"months": 11}}, "months"),
         (
             {"query": {"mode": "article", "value": "Astronomy"}, "languages": ["uk"], "period": {"months": 121}},
             "months",
@@ -131,6 +130,78 @@ def test_invalid_config_is_rejected(payload: dict[str, object], expected_message
 def test_complete_month_range_excludes_current_month() -> None:
     assert complete_month_range(24, date(2026, 9, 24)) == (date(2024, 9, 1), date(2026, 8, 1))
     assert complete_month_range(12, date(2026, 1, 1)) == (date(2025, 1, 1), date(2025, 12, 1))
+
+
+def test_legacy_one_month_window_remains_supported() -> None:
+    config = AnalysisConfig.model_validate(
+        {"query": {"mode": "article", "value": "Astronomy"}, "languages": ["uk"], "period": {"months": 1}}
+    )
+
+    assert resolve_period(config.period, date(2026, 9, 25)) == (date(2026, 8, 1), date(2026, 8, 31))
+    assert latest_complete_day(date(2026, 9, 25)) == date(2026, 9, 24)
+
+
+def test_explicit_complete_month_dates_infer_monthly_granularity() -> None:
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "article", "value": "Astronomy"},
+            "languages": ["uk"],
+            "period": {"start": "2026-08-01", "end": "2026-08-31"},
+            "criteria": {"growth": False},
+        }
+    )
+
+    assert config.period.months is None
+    assert config.period.resolved_granularity is Granularity.MONTHLY
+
+
+def test_explicit_partial_month_dates_infer_daily_granularity() -> None:
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "article", "value": "Astronomy"},
+            "languages": ["uk"],
+            "period": {"start": "2026-08-04", "end": "2026-08-20"},
+            "criteria": {"growth": False},
+        }
+    )
+
+    assert config.period.resolved_granularity is Granularity.DAILY
+
+
+def test_growth_threshold_accepts_explicit_preceding_baseline() -> None:
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "topic", "value": "space science"},
+            "languages": ["pl", "cs"],
+            "period": {"start": "2026-08-01", "end": "2026-08-31"},
+            "comparison_period": {
+                "start": "2026-07-01",
+                "end": "2026-07-31",
+                "granularity": "monthly",
+            },
+            "criteria": {"growth": True},
+            "thresholds": [
+                {"name": "minimum growth", "metric": "growth_pct", "operator": "gte", "threshold": 5}
+            ],
+        }
+    )
+
+    assert config.comparison_period is not None
+    assert config.thresholds[0].threshold == 5
+
+
+def test_growth_threshold_without_comparison_period_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="comparison_period is required"):
+        AnalysisConfig.model_validate(
+            {
+                "query": {"mode": "article", "value": "Astronomy"},
+                "languages": ["uk"],
+                "period": {"start": "2026-08-01", "end": "2026-08-31"},
+                "thresholds": [
+                    {"name": "growth", "metric": "growth_pct", "operator": "gte", "threshold": 5}
+                ],
+            }
+        )
 
 
 def test_monthly_pageview_distinguishes_missing_observations() -> None:

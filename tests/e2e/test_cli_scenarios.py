@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -13,6 +13,7 @@ from wiki_trends import cli, pipeline
 from wiki_trends.config import AnalysisConfig
 from wiki_trends.models import (
     ArticleResolution,
+    Granularity,
     MonthlyPageview,
     ResolutionMethod,
     ResolutionStatus,
@@ -20,6 +21,7 @@ from wiki_trends.models import (
     TopicResolution,
     TopicSelectionMethod,
 )
+from wiki_trends.report import AnalysisReport
 from wiki_trends.wikipedia_client import PageviewsFetchResult
 
 
@@ -76,18 +78,49 @@ class _Pageviews:
     def __exit__(self, *_: object) -> None:
         return None
 
-    def get_article_pageviews_result(self, _: str, __: str, start: str, end: str) -> PageviewsFetchResult:
-        return PageviewsFetchResult(_series(start, end), "network")
+    def get_article_pageviews_result(
+        self,
+        _: str,
+        __: str,
+        start: date,
+        end: date,
+        *,
+        granularity: Granularity = Granularity.MONTHLY,
+    ) -> PageviewsFetchResult:
+        return PageviewsFetchResult(_series(start, end, granularity), "network")
+
+    def get_project_pageviews_result(
+        self,
+        _: str,
+        start: date,
+        end: date,
+        *,
+        granularity: Granularity = Granularity.MONTHLY,
+    ) -> PageviewsFetchResult:
+        return PageviewsFetchResult(_series(start, end, granularity, views=1_000_000), "network")
 
 
-def _series(start: str, end: str) -> list[MonthlyPageview]:
-    start_date, end_date = date.fromisoformat(start), date.fromisoformat(end)
-    months: list[MonthlyPageview] = []
+def _series(
+    start_date: date,
+    end_date: date,
+    granularity: Granularity = Granularity.MONTHLY,
+    *,
+    views: int = 100,
+) -> list[MonthlyPageview]:
+    observations: list[MonthlyPageview] = []
+    if granularity is Granularity.DAILY:
+        current = start_date
+        while current <= end_date:
+            observations.append(MonthlyPageview(month=current, granularity=granularity, views=views))
+            current += timedelta(days=1)
+        return observations
     year, month = start_date.year, start_date.month
     while (year, month) <= (end_date.year, end_date.month):
-        months.append(MonthlyPageview(month=date(year, month, 1), views=100 + len(months) * 10))
+        observations.append(
+            MonthlyPageview(month=date(year, month, 1), granularity=granularity, views=views + len(observations) * 10)
+        )
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
-    return months
+    return observations
 
 
 def _article(language: str, title: str) -> ResolvedArticle:
@@ -143,10 +176,72 @@ def test_mocked_pipeline_writes_json_png_and_one_page_pdf(
 
     json_path, png_path, pdf_path = pipeline.run_analysis(config, tmp_path / "output")
     report = json.loads(json_path.read_text(encoding="utf-8"))
+    AnalysisReport.model_validate(report)
 
-    assert report["schema_version"] == "1.0.0"
+    assert report["schema_version"] == "2.0.0"
     assert set(report["languages"]) == set(languages)
     assert png_path.read_bytes().startswith(b"\x89PNG")
     assert len(PdfReader(pdf_path).pages) == 1
+    assert report["artifacts"]["pdf"] == str(pdf_path)
     assert all(section["absolute_metrics"] is not None for section in report["languages"].values())
     assert all(source["retrieval"] == "network" for source in report["sources"])
+
+
+def test_daily_pipeline_reports_exact_dates_baseline_thresholds_and_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise date-specific retrieval, growth criteria, and schema-v2 artifacts."""
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "article", "value": "Astronomy", "source_language": "uk"},
+            "languages": ["uk"],
+            "period": {"start": "2026-08-01", "end": "2026-08-07"},
+            "comparison_period": {
+                "start": "2026-07-25",
+                "end": "2026-07-31",
+                "granularity": "daily",
+            },
+            "thresholds": [
+                {"name": "nonnegative growth", "metric": "growth_pct", "operator": "gte", "threshold": 0},
+                {
+                    "name": "normalized floor",
+                    "metric": "normalized_interest_mean",
+                    "operator": "gte",
+                    "threshold": 100,
+                },
+            ],
+        }
+    )
+    result = ArticleResolution(
+        requested_title="Astronomy",
+        source_language="uk",
+        status=ResolutionStatus.RESOLVED,
+        articles=[_article("uk", "Астрономія")],
+    )
+    monkeypatch.setattr(pipeline, "ArticleResolver", lambda: _Resolver(result))
+    monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", _Pageviews)
+    monkeypatch.setattr(pipeline, "latest_complete_day", lambda: date(2026, 8, 5))
+
+    json_path, chart_path, pdf_path = pipeline.run_analysis(config, tmp_path / "output")
+    assert json_path is not None and chart_path is not None and pdf_path is not None
+    report = json.loads(json_path.read_text(encoding="utf-8"))
+
+    assert report["schema_version"] == "2.0.0"
+    assert report["requested_period"] == {
+        "start": "2026-08-01",
+        "end": "2026-08-07",
+        "granularity": "daily",
+    }
+    AnalysisReport.model_validate(report)
+    assert report["period"] == {
+        "start": "2026-08-01",
+        "end": "2026-08-05",
+        "granularity": "daily",
+    }
+    assert len(report["languages"]["uk"]["pageviews"]) == 5
+    assert report["languages"]["uk"]["criterion_evaluations"][0]["status"] == "not_evaluable"
+    assert report["languages"]["uk"]["period_growth"]["status"] == "insufficient_data"
+    assert report["languages"]["uk"]["criterion_evaluations"][1]["status"] == "met"
+    assert report["artifacts"]["pdf"] == str(pdf_path)
+    assert chart_path.exists() and len(PdfReader(pdf_path).pages) == 1

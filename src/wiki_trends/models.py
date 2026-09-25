@@ -8,7 +8,7 @@ from math import isclose
 from statistics import median
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
     "AbsoluteMetrics",
@@ -21,14 +21,22 @@ __all__ = [
     "ConfidenceInterval",
     "ConfidenceIntervalStatus",
     "ComparisonPeriod",
+    "CriterionEvaluation",
+    "CriterionEvaluationStatus",
+    "CriterionMetric",
+    "CriterionOperator",
+    "Granularity",
     "LanguageComparisonInput",
     "LanguageComparisonMetrics",
     "MissingLanguageEquivalent",
     "MultiLanguageComparison",
     "MonthlyPageview",
+    "PageviewObservation",
     "NormalizedInterest",
     "NormalizedInterestPoint",
     "ObservationStatus",
+    "PeriodGrowthMetrics",
+    "PeriodGrowthStatus",
     "QualityCheck",
     "QualityCheckId",
     "QualityReport",
@@ -45,11 +53,67 @@ __all__ = [
 
 
 class ObservationStatus(StrEnum):
-    """How confidently a monthly pageview value is known."""
+    """How confidently one pageview time bucket is known."""
 
     OBSERVED = "observed"
     ZERO_INFERRED = "zero_inferred"
     UNKNOWN = "unknown"
+
+
+class Granularity(StrEnum):
+    """Time-bucket size represented by one pageview observation."""
+
+    DAILY = "daily"
+    MONTHLY = "monthly"
+
+
+class CriterionMetric(StrEnum):
+    """Existing measurable quantities that can be checked against user thresholds."""
+
+    GROWTH_PCT = "growth_pct"
+    NORMALIZED_INTEREST_MEAN = "normalized_interest_mean"
+    COMPLETENESS_RATIO = "completeness_ratio"
+
+
+class CriterionOperator(StrEnum):
+    """Supported comparisons for typed numerical criterion thresholds."""
+
+    GT = "gt"
+    GTE = "gte"
+    LT = "lt"
+    LTE = "lte"
+
+
+class CriterionEvaluationStatus(StrEnum):
+    """Whether an observed metric satisfies a user-defined threshold."""
+
+    MET = "met"
+    NOT_MET = "not_met"
+    NOT_EVALUABLE = "not_evaluable"
+
+
+class CriterionEvaluation(BaseModel):
+    """One independently evaluated, language-local user criterion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    metric: CriterionMetric
+    operator: CriterionOperator
+    threshold: float
+    value: float | None = None
+    status: CriterionEvaluationStatus
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_evaluation_state(self) -> CriterionEvaluation:
+        """Require a value for evaluated criteria and a reason for unavailable ones."""
+        if self.status is CriterionEvaluationStatus.NOT_EVALUABLE:
+            if self.value is not None or not self.reason:
+                raise ValueError("not_evaluable criteria require a reason and no numeric value")
+        elif self.value is None or self.reason is not None:
+            raise ValueError("evaluated criteria require a numeric value and no unavailable reason")
+        return self
 
 
 class AnomalyDirection(StrEnum):
@@ -71,7 +135,7 @@ class AnomalyRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    month: str = Field(pattern=r"^\d{4}-\d{2}(?:-\d{2})?$")
     views: int = Field(ge=0)
     direction: AnomalyDirection
     score: float
@@ -153,25 +217,20 @@ class QualityReport(BaseModel):
 
 
 class MonthlyPageview(BaseModel):
-    """A single monthly pageview observation for an article edition."""
+    """A pageview bucket observation, with the old name retained for compatibility."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    month: date
+    month: date = Field(validation_alias=AliasChoices("timestamp", "month"), serialization_alias="timestamp")
+    granularity: Granularity = Granularity.MONTHLY
     views: int | None = Field(default=None, ge=0)
     status: ObservationStatus = ObservationStatus.OBSERVED
-
-    @field_validator("month")
-    @classmethod
-    def month_must_start_on_first_day(cls, month: date) -> date:
-        """Require a canonical month identifier rather than an arbitrary date."""
-        if month.day != 1:
-            raise ValueError("monthly pageview dates must be the first day of the month")
-        return month
 
     @model_validator(mode="after")
     def validate_observation(self) -> MonthlyPageview:
         """Keep unknown and inferred values unambiguous for later analytics."""
+        if self.granularity is Granularity.MONTHLY and self.month.day != 1:
+            raise ValueError("monthly pageview timestamps must be the first day of the month")
         if self.status is ObservationStatus.UNKNOWN and self.views is not None:
             raise ValueError("unknown observations must not include a view count")
         if self.status is not ObservationStatus.UNKNOWN and self.views is None:
@@ -180,27 +239,30 @@ class MonthlyPageview(BaseModel):
             raise ValueError("zero_inferred observations must have zero views")
         return self
 
+    @property
+    def timestamp(self) -> date:
+        """Return the calendar date represented by this observation."""
+        return self.month
+
+
+PageviewObservation = MonthlyPageview
+
 
 class NormalizedInterestPoint(BaseModel):
-    """One calendar-month article-interest value relative to project traffic."""
+    """One article-interest value relative to aligned project traffic."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    month: date
+    month: date = Field(validation_alias=AliasChoices("timestamp", "month"), serialization_alias="timestamp")
+    granularity: Granularity = Granularity.MONTHLY
     value: float | None = Field(default=None, ge=0)
     status: ObservationStatus = ObservationStatus.OBSERVED
-
-    @field_validator("month")
-    @classmethod
-    def month_must_start_on_first_day(cls, month: date) -> date:
-        """Require a canonical month identifier rather than an arbitrary date."""
-        if month.day != 1:
-            raise ValueError("normalized-interest dates must be the first day of the month")
-        return month
 
     @model_validator(mode="after")
     def validate_point_state(self) -> NormalizedInterestPoint:
         """Keep unavailable normalization values distinct from measured values."""
+        if self.granularity is Granularity.MONTHLY and self.month.day != 1:
+            raise ValueError("monthly normalized-interest timestamps must be the first day of the month")
         if self.status is ObservationStatus.ZERO_INFERRED:
             raise ValueError("normalized-interest observations cannot be zero_inferred")
         if self.status is ObservationStatus.UNKNOWN and self.value is not None:
@@ -211,12 +273,15 @@ class NormalizedInterestPoint(BaseModel):
 
 
 class NormalizedInterest(BaseModel):
-    """Monthly and period-summary interest per one million project pageviews."""
+    """Bucketed and period-summary interest per one million project pageviews."""
 
     model_config = ConfigDict(extra="forbid")
 
     unit: Literal["views_per_1m_project_views"] = "views_per_1m_project_views"
-    monthly: list[NormalizedInterestPoint]
+    monthly: list[NormalizedInterestPoint] = Field(
+        validation_alias=AliasChoices("series", "monthly"),
+        serialization_alias="series",
+    )
     mean: float | None = Field(default=None, ge=0)
     median: float | None = Field(default=None, ge=0)
 
@@ -250,23 +315,41 @@ class AbsoluteMetricsStatus(StrEnum):
 
 
 class AbsoluteMetrics(BaseModel):
-    """Deterministic baseline metrics for a requested monthly pageview series.
+    """Deterministic baseline metrics for a requested pageview series.
 
     Numeric aggregate fields are ``None`` when every requested observation is
     unknown. Counts and completeness remain available so callers can report
     that insufficient-data state without inferring a zero-valued series.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     status: AbsoluteMetricsStatus
     total_views: int | None = Field(default=None, ge=0)
-    mean_monthly_views: float | None = Field(default=None, ge=0)
-    median_monthly_views: float | None = Field(default=None, ge=0)
+    mean_monthly_views: float | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices("mean_views_per_bucket", "mean_monthly_views"),
+        serialization_alias="mean_views_per_bucket",
+    )
+    median_monthly_views: float | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices("median_views_per_bucket", "median_monthly_views"),
+        serialization_alias="median_views_per_bucket",
+    )
     min_monthly_views: int | None = Field(default=None, ge=0)
     max_monthly_views: int | None = Field(default=None, ge=0)
-    observed_months: int = Field(ge=0)
-    requested_months: int = Field(ge=0)
+    observed_months: int = Field(
+        ge=0,
+        validation_alias=AliasChoices("observed_periods", "observed_months"),
+        serialization_alias="observed_periods",
+    )
+    requested_months: int = Field(
+        ge=0,
+        validation_alias=AliasChoices("requested_periods", "requested_months"),
+        serialization_alias="requested_periods",
+    )
     completeness_ratio: float = Field(ge=0, le=1)
 
     @model_validator(mode="after")
@@ -352,6 +435,47 @@ class YoYMetrics(BaseModel):
                 raise ValueError("unavailable YoY metrics must not include totals or growth percentages")
             if not self.notes:
                 raise ValueError("unavailable YoY metrics require an explanatory note")
+        return self
+
+
+class PeriodGrowthStatus(StrEnum):
+    """Whether a selected period can be compared with its explicit baseline."""
+
+    AVAILABLE = "available"
+    INSUFFICIENT_DATA = "insufficient_data"
+    ZERO_BASELINE = "zero_baseline"
+    NON_COMPARABLE_PERIODS = "non_comparable_periods"
+
+
+class PeriodGrowthMetrics(BaseModel):
+    """Growth between a selected window and an equal-length user-chosen baseline."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    baseline_total: int | None = Field(default=None, ge=0)
+    period_total: int | None = Field(default=None, ge=0)
+    growth_pct: float | None = None
+    status: PeriodGrowthStatus
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_growth_state(self) -> PeriodGrowthMetrics:
+        """Keep metric values consistent with the declared result status."""
+        if self.status is PeriodGrowthStatus.AVAILABLE:
+            if self.baseline_total in (None, 0) or self.period_total is None or self.growth_pct is None:
+                raise ValueError("available period growth requires positive baseline and numeric result")
+            expected = ((self.period_total / self.baseline_total) - 1) * 100
+            if not isclose(self.growth_pct, expected):
+                raise ValueError("period growth must match its totals")
+        elif self.status is PeriodGrowthStatus.ZERO_BASELINE:
+            if self.baseline_total != 0 or self.period_total is None or self.growth_pct is not None:
+                raise ValueError("zero-baseline growth requires zero baseline, period total, and no percentage")
+            if not self.notes:
+                raise ValueError("zero-baseline growth requires an explanation")
+        elif self.baseline_total is not None or self.period_total is not None or self.growth_pct is not None:
+            raise ValueError("unavailable period growth must not include totals or growth")
+        elif not self.notes:
+            raise ValueError("unavailable period growth requires an explanation")
         return self
 
 
@@ -523,20 +647,15 @@ class ComparisonPeriod(BaseModel):
 
     start: date
     end: date
-
-    @field_validator("start", "end")
-    @classmethod
-    def month_must_start_on_first_day(cls, month: date) -> date:
-        """Require canonical month identifiers for shared-period reporting."""
-        if month.day != 1:
-            raise ValueError("comparison period dates must be the first day of the month")
-        return month
+    granularity: Granularity = Granularity.MONTHLY
 
     @model_validator(mode="after")
     def start_must_not_follow_end(self) -> ComparisonPeriod:
-        """Keep a comparison period chronologically valid."""
+        """Keep comparison bounds valid and monthly boundaries canonical."""
         if self.start > self.end:
             raise ValueError("comparison period start must not follow end")
+        if self.granularity is Granularity.MONTHLY and (self.start.day != 1 or self.end.day != 1):
+            raise ValueError("monthly comparison period dates must be first-of-month bucket identifiers")
         return self
 
 
@@ -576,8 +695,16 @@ class LanguageComparisonMetrics(BaseModel):
     absolute_metrics: AbsoluteMetrics | None = None
     normalized_interest: NormalizedInterest | None = None
     yoy_metrics: YoYMetrics | None = None
-    requested_months: int = Field(ge=0)
-    available_months: int = Field(ge=0)
+    requested_months: int = Field(
+        ge=0,
+        validation_alias=AliasChoices("requested_periods", "requested_months"),
+        serialization_alias="requested_periods",
+    )
+    available_months: int = Field(
+        ge=0,
+        validation_alias=AliasChoices("available_periods", "available_months"),
+        serialization_alias="available_periods",
+    )
     warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")

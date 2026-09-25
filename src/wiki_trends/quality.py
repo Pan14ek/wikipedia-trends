@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import timedelta
 from math import isfinite
 
 from wiki_trends.analytics import compute_yoy_metrics
@@ -12,6 +12,7 @@ from wiki_trends.models import (
     AnomalyDetection,
     AnomalyRecord,
     ArticleResolution,
+    Granularity,
     MonthlyPageview,
     ObservationStatus,
     QualityCheck,
@@ -135,6 +136,12 @@ def _evaluate_period_sufficiency(
 ) -> QualityCheck:
     """Report whether the requested period and computed YoY data are sufficient."""
     requested_months = len(monthly_pageviews)
+    if monthly_pageviews and monthly_pageviews[0].granularity is Granularity.DAILY:
+        return _not_evaluated_check(
+            QualityCheckId.PERIOD_SUFFICIENCY,
+            "Monthly YoY sufficiency rules do not apply to a daily date window.",
+            "daily series uses a user-selected comparison period when growth is requested",
+        )
     details: dict[str, QualityDetailValue] = {
         "requested_months": requested_months,
         "yoy_status": yoy_metrics.status.value if yoy_metrics else "not_supplied",
@@ -223,7 +230,7 @@ def _evaluate_trend_consistency(monthly_pageviews: Sequence[MonthlyPageview]) ->
     sorted_observations = sorted(monthly_pageviews, key=lambda observation: observation.month)
     known_pairs: list[tuple[int, int]] = []
     for previous, current in zip(sorted_observations, sorted_observations[1:], strict=False):
-        if not _are_adjacent_months(previous.month, current.month):
+        if not _are_adjacent(previous, current):
             continue
         if previous.status is ObservationStatus.UNKNOWN or current.status is ObservationStatus.UNKNOWN:
             continue
@@ -269,6 +276,12 @@ def _evaluate_spike_sensitivity(
         "detection_method": anomaly_detection.method.value if anomaly_detection.method else None,
         "materiality_threshold_percentage_points": materiality_threshold_pct,
     }
+    if monthly_pageviews and monthly_pageviews[0].granularity is Granularity.DAILY:
+        return _not_evaluated_check(
+            QualityCheckId.SPIKE_SENSITIVITY,
+            "YoY spike sensitivity is only defined for monthly observations.",
+            "daily series has no calendar-aligned YoY metric",
+        )
     if anomaly_detection.limitation is not None:
         return QualityCheck(
             id=QualityCheckId.SPIKE_SENSITIVITY,
@@ -387,6 +400,8 @@ def _validate_unique_months(monthly_pageviews: Sequence[MonthlyPageview]) -> Non
         raise ValueError("quality checks require at most one observation per calendar month")
 
 
-def _are_adjacent_months(previous_month: date, current_month: date) -> bool:
-    """Return whether two canonical month identifiers are consecutive."""
-    return current_month.year * 12 + current_month.month == previous_month.year * 12 + previous_month.month + 1
+def _are_adjacent(previous: MonthlyPageview, current: MonthlyPageview) -> bool:
+    """Return whether two observations are adjacent at their declared resolution."""
+    if previous.granularity is Granularity.DAILY and current.granularity is Granularity.DAILY:
+        return current.month - previous.month == timedelta(days=1)
+    return current.month.year * 12 + current.month.month == previous.month.year * 12 + previous.month.month + 1

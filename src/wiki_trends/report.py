@@ -23,15 +23,18 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
 
-from wiki_trends.config import AnalysisConfig
+from wiki_trends.config import AnalysisConfig, CriterionConfig
 from wiki_trends.models import (
     AbsoluteMetrics,
     AnomalyDetection,
     ArticleResolution,
     ConfidenceInterval,
+    CriterionEvaluation,
+    Granularity,
     MonthlyPageview,
     MultiLanguageComparison,
     NormalizedInterest,
+    PeriodGrowthMetrics,
     QualityCheck,
     TopicResolution,
     YoYMetrics,
@@ -51,7 +54,7 @@ __all__ = [
     "write_analysis_report",
 ]
 
-ANALYSIS_REPORT_SCHEMA_VERSION: Final[Literal["1.0.0"]] = "1.0.0"
+ANALYSIS_REPORT_SCHEMA_VERSION: Final[Literal["2.0.0"]] = "2.0.0"
 _RUN_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _PAGE_WIDTH, _PAGE_HEIGHT = A4
@@ -85,20 +88,13 @@ class ReportRun(BaseModel):
 
 
 class ReportPeriod(BaseModel):
-    """The requested complete-month window represented by this report."""
+    """An inclusive requested or available daily/monthly date window."""
 
     model_config = ConfigDict(extra="forbid")
 
     start: date
     end: date
-
-    @field_validator("start", "end")
-    @classmethod
-    def month_must_start_on_first_day(cls, value: date) -> date:
-        """Use the same canonical month identifiers as the pageview series."""
-        if value.day != 1:
-            raise ValueError("report period dates must be the first day of a month")
-        return value
+    granularity: Granularity = Granularity.MONTHLY
 
     @model_validator(mode="after")
     def start_must_not_follow_end(self) -> ReportPeriod:
@@ -120,7 +116,7 @@ class DataSourceMetadata(BaseModel):
     fetched_at: datetime
     access: str = Field(min_length=1)
     agent: str = Field(min_length=1)
-    granularity: Literal["monthly"] = "monthly"
+    granularity: Granularity = Granularity.MONTHLY
     retrieval: Literal["network", "cache"] = "network"
 
 
@@ -148,11 +144,13 @@ class LanguageReport(BaseModel):
     pageviews: list[MonthlyPageview] = Field(default_factory=list)
     absolute_metrics: AbsoluteMetrics | None = None
     yoy_metrics: YoYMetrics | None = None
+    period_growth: PeriodGrowthMetrics | None = None
     normalized_interest: NormalizedInterest | None = None
     anomalies: AnomalyDetection | None = None
     confidence_interval: ConfidenceInterval | None = None
     quality: list[QualityCheck] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    criterion_evaluations: list[CriterionEvaluation] = Field(default_factory=list)
 
     @field_validator("pageviews")
     @classmethod
@@ -175,18 +173,21 @@ class ReportArtifacts(BaseModel):
 
 
 class AnalysisReport(BaseModel):
-    """Stable version-one JSON contract for a completed Wikipedia Trends run."""
+    """Stable version-two JSON contract for a completed Wikipedia Trends run."""
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.0.0"] = ANALYSIS_REPORT_SCHEMA_VERSION
+    schema_version: Literal["2.0.0"] = ANALYSIS_REPORT_SCHEMA_VERSION
     run: ReportRun
     input: AnalysisConfig
     resolution: ReportResolution
     sources: list[DataSourceMetadata]
     period: ReportPeriod
+    requested_period: ReportPeriod
+    comparison_period: ReportPeriod | None = None
     languages: dict[str, LanguageReport]
     comparison: MultiLanguageComparison | None = None
+    criteria: list[CriterionConfig] = Field(default_factory=list)
     quality: list[QualityCheck] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     artifacts: ReportArtifacts = Field(default_factory=ReportArtifacts)
@@ -203,7 +204,8 @@ def create_run_slug(period: ReportPeriod, config: AnalysisConfig) -> str:
     """Create a readable deterministic default slug from date, query, and languages."""
     subject = re.sub(r"[^a-z0-9]+", "-", config.query.value.casefold()).strip("-") or "analysis"
     languages = "-".join(config.languages)
-    return f"{period.start:%Y%m}-{period.end:%Y%m}-{subject}-{languages}"[:120].rstrip("-")
+    date_format = "%Y%m%d" if period.granularity is Granularity.DAILY else "%Y%m"
+    return f"{period.start:{date_format}}-{period.end:{date_format}}-{subject}-{languages}"[:120].rstrip("-")
 
 
 def write_analysis_report(report: AnalysisReport, output_root: Path = Path("output")) -> Path:
@@ -449,7 +451,9 @@ def _reliability_lines(report: AnalysisReport) -> list[str]:
 
 
 def _period_label(period: ReportPeriod) -> str:
-    """Return an unambiguous compact month range for visible report text."""
+    """Return an unambiguous date or month range for visible report text."""
+    if period.granularity is Granularity.DAILY:
+        return f"{period.start.isoformat()} - {period.end.isoformat()}"
     return f"{period.start:%b %Y} - {period.end:%b %Y}"
 
 

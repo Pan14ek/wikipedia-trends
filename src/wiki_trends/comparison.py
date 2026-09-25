@@ -9,6 +9,7 @@ from statistics import median
 from wiki_trends.analytics import compute_absolute_metrics, compute_yoy_metrics
 from wiki_trends.models import (
     ComparisonPeriod,
+    Granularity,
     LanguageComparisonInput,
     LanguageComparisonMetrics,
     MonthlyPageview,
@@ -56,7 +57,9 @@ def compare_languages(language_inputs: Sequence[LanguageComparisonInput]) -> Mul
     shared_months = _shared_available_months(resolved_inputs)
     requested_shared_months = _shared_requested_months(resolved_inputs)
     warnings.extend(_period_warnings(resolved_inputs, requested_shared_months, shared_months))
-    comparable = _is_comparable(inputs, metrics_by_language, shared_months)
+    granularity = _shared_granularity(resolved_inputs)
+    minimum_shared = 12 if granularity is Granularity.MONTHLY else 1
+    comparable = _is_comparable(inputs, metrics_by_language, shared_months, minimum_shared)
     normalized_months = _shared_normalized_months(resolved_inputs, shared_months)
     normalized_comparable = comparable and bool(normalized_months)
     if comparable and not normalized_comparable:
@@ -66,13 +69,14 @@ def compare_languages(language_inputs: Sequence[LanguageComparisonInput]) -> Mul
         for item in resolved_inputs:
             metrics_by_language[item.language] = _calculated_metrics(item, shared_months, normalized_months)
 
-    effective_period = _effective_period(shared_months)
+    effective_period = _effective_period(shared_months, granularity)
     validity = _comparison_validity(
         inputs,
         comparable,
         effective_period,
         shared_months,
         warnings,
+        minimum_shared,
     )
     return MultiLanguageComparison(
         languages=[item.language for item in inputs],
@@ -189,9 +193,10 @@ def _is_comparable(
     inputs: Sequence[LanguageComparisonInput],
     metrics_by_language: dict[str, LanguageComparisonMetrics],
     shared_months: Sequence[date],
+    minimum_shared: int,
 ) -> bool:
     """Apply the explicit M13 direct-comparison validity rules."""
-    if any(not item.resolved for item in inputs) or len(shared_months) < _MINIMUM_SHARED_MONTHS:
+    if any(not item.resolved for item in inputs) or len(shared_months) < minimum_shared:
         return False
     return all(
         metrics.available_months / metrics.requested_months >= _COMPLETENESS_MINIMUM_THRESHOLD
@@ -257,11 +262,22 @@ def _aligned_normalized_interest(
     return NormalizedInterest(monthly=points, mean=sum(values) / len(values), median=median(values))
 
 
-def _effective_period(shared_months: Sequence[date]) -> ComparisonPeriod | None:
+def _effective_period(
+    shared_months: Sequence[date],
+    granularity: Granularity,
+) -> ComparisonPeriod | None:
     """Expose the exact start and end bounds of shared known observations."""
     if not shared_months:
         return None
-    return ComparisonPeriod(start=shared_months[0], end=shared_months[-1])
+    return ComparisonPeriod(start=shared_months[0], end=shared_months[-1], granularity=granularity)
+
+
+def _shared_granularity(inputs: Sequence[LanguageComparisonInput]) -> Granularity:
+    """Read one common granularity and reject accidental mixed resolutions."""
+    granularities = {observation.granularity for item in inputs for observation in item.pageviews}
+    if len(granularities) > 1:
+        raise ValueError("language comparison series must use the same granularity")
+    return next(iter(granularities), Granularity.MONTHLY)
 
 
 def _comparison_validity(
@@ -270,21 +286,22 @@ def _comparison_validity(
     effective_period: ComparisonPeriod | None,
     shared_months: Sequence[date],
     warnings: Sequence[str],
+    minimum_shared: int,
 ) -> QualityCheck:
     """Translate comparison validity into the stable M08 quality-check shape."""
     details: dict[str, QualityDetailValue] = {
         "requested_languages": [item.language for item in inputs],
         "resolved_languages": [item.language for item in inputs if item.resolved],
         "shared_available_months": len(shared_months),
-        "minimum_shared_months": _MINIMUM_SHARED_MONTHS,
-        "effective_period_start": effective_period.start.strftime("%Y-%m") if effective_period else None,
-        "effective_period_end": effective_period.end.strftime("%Y-%m") if effective_period else None,
+        "minimum_shared_periods": minimum_shared,
+        "effective_period_start": effective_period.start.isoformat() if effective_period else None,
+        "effective_period_end": effective_period.end.isoformat() if effective_period else None,
     }
     if not comparable:
         return QualityCheck(
             id=QualityCheckId.COMPARISON_VALIDITY,
             status=QualityStatus.FAIL,
-            message="Direct comparison is invalid until every language resolves and at least 12 shared known months exist.",
+            message=f"Direct comparison is invalid until every language resolves and at least {minimum_shared} shared known buckets exist.",
             details=details,
         )
     if warnings:

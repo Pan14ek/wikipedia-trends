@@ -9,6 +9,7 @@ import pytest
 from wiki_trends.analytics import compute_yoy_metrics
 from wiki_trends.models import (
     ArticleResolution,
+    Granularity,
     MissingLanguageEquivalent,
     MonthlyPageview,
     ObservationStatus,
@@ -83,6 +84,19 @@ def test_fails_yoy_period_check_when_aligned_data_is_insufficient() -> None:
     period = _check(report.checks, QualityCheckId.PERIOD_SUFFICIENCY)
     assert period.status is QualityStatus.FAIL
     assert "cannot support a valid YoY comparison" in period.message
+
+
+def test_daily_period_does_not_fail_monthly_yoy_sufficiency_rules() -> None:
+    series = [
+        MonthlyPageview(month=date(2026, 8, day), granularity=Granularity.DAILY, views=day * 10)
+        for day in range(1, 8)
+    ]
+
+    report = evaluate_quality(series, _resolved_article())
+
+    assert _check(report.checks, QualityCheckId.PERIOD_SUFFICIENCY).status is QualityStatus.NOT_EVALUATED
+    assert _check(report.checks, QualityCheckId.SPIKE_SENSITIVITY).status is QualityStatus.NOT_EVALUATED
+    assert _check(report.checks, QualityCheckId.TREND_CONSISTENCY).status is QualityStatus.PASS
 
 
 def test_reports_unresolved_language_as_a_resolution_failure() -> None:

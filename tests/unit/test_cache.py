@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 
 from wiki_trends.cache import CacheNamespace, FilesystemCache, pageviews_ttl
+from wiki_trends.models import Granularity
 from wiki_trends.wikipedia_client import WikimediaPageviewsClient
 
 
@@ -69,3 +70,28 @@ def test_disabled_cache_does_not_create_entries_and_ttl_tracks_recent_months(tmp
     assert not (tmp_path / "cache").exists()
     assert pageviews_ttl(date(2026, 8, 1), date(2026, 9, 25)) == timedelta(hours=24)
     assert pageviews_ttl(date(2026, 6, 1), date(2026, 9, 25)) == timedelta(days=30)
+
+
+def test_daily_and_monthly_ranges_have_distinct_cache_keys(tmp_path: Path) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"items": [{"timestamp": "2026080100", "views": calls}]})
+
+    cache = FilesystemCache(tmp_path / "cache")
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = WikimediaPageviewsClient(http_client=http_client, cache=cache)
+        monthly = client.get_article_pageviews_result("uk.wikipedia", "Kyiv", date(2026, 8, 1), date(2026, 8, 1))
+        daily = client.get_article_pageviews_result(
+            "uk.wikipedia",
+            "Kyiv",
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+            granularity=Granularity.DAILY,
+        )
+
+    assert calls == 2
+    assert monthly.observations[0].granularity is Granularity.MONTHLY
+    assert daily.observations[0].granularity is Granularity.DAILY

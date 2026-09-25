@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 from wiki_trends.comparison import compare_languages
-from wiki_trends.models import LanguageComparisonInput, MonthlyPageview, ObservationStatus, QualityStatus
+from wiki_trends.models import Granularity, LanguageComparisonInput, MonthlyPageview, ObservationStatus, QualityStatus
 from wiki_trends.normalization import compute_normalized_interest
 from wiki_trends.quality import evaluate_quality
 
@@ -41,6 +41,22 @@ def test_compares_three_languages_using_the_same_shared_period() -> None:
     assert result.comparable is True
     assert result.languages == ["en", "pl", "cs"]
     assert set(result.metrics_by_language) == {"en", "pl", "cs"}
+
+
+def test_daily_comparison_accepts_short_exact_shared_window() -> None:
+    days = [date(2026, 8, day) for day in range(1, 8)]
+    result = compare_languages(
+        [
+            _input("en", [MonthlyPageview(month=day, granularity=Granularity.DAILY, views=100) for day in days]),
+            _input("uk", [MonthlyPageview(month=day, granularity=Granularity.DAILY, views=200) for day in days]),
+        ]
+    )
+
+    assert result.comparable is True
+    assert result.effective_period is not None
+    assert result.effective_period.granularity is Granularity.DAILY
+    assert result.effective_period.start == days[0]
+    assert result.effective_period.end == days[-1]
 
 
 def test_missing_month_is_excluded_from_direct_metrics_with_a_warning() -> None:
@@ -101,7 +117,10 @@ def test_comparison_validity_integrates_with_the_existing_quality_report() -> No
 
 def _input(language: str, series: list[MonthlyPageview]) -> LanguageComparisonInput:
     """Build a complete comparison input with aligned normalized interest."""
-    project_series = [MonthlyPageview(month=observation.month, views=1_000) for observation in series]
+    project_series = [
+        MonthlyPageview(month=observation.month, granularity=observation.granularity, views=1_000)
+        for observation in series
+    ]
     return LanguageComparisonInput(
         language=language,
         pageviews=series,

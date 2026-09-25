@@ -85,6 +85,7 @@ def _report(languages: list[str] | None = None) -> AnalysisReport:
             )
         ],
         period=period,
+        requested_period=period,
         languages=language_reports,
         warnings=["The fixture has fewer than 12 requested observations."],
         artifacts=ReportArtifacts(charts=["trend.png"]),

@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from wiki_trends.models import ObservationStatus
+from wiki_trends.models import Granularity, ObservationStatus
 from wiki_trends.wikipedia_client import (
     WikimediaNotFoundError,
     WikimediaPageviewsClient,
@@ -92,6 +92,61 @@ def test_project_pageviews_use_aggregate_endpoint_and_fill_missing_months() -> N
     ]
 
 
+def test_daily_article_endpoint_honors_exact_dates_and_marks_missing_days_unknown() -> None:
+    raw_paths: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raw_paths.append(request.url.raw_path)
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {"timestamp": "2026080100", "views": 25},
+                    {"timestamp": "2026080300", "views": 40},
+                ],
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        observations = WikimediaPageviewsClient(http_client=http_client).get_article_pageviews(
+            "uk.wikipedia",
+            "Аніме",
+            date(2026, 8, 1),
+            date(2026, 8, 3),
+            granularity=Granularity.DAILY,
+        )
+
+    assert raw_paths == [
+        b"/api/rest_v1/metrics/pageviews/per-article/uk.wikipedia/all-access/user/"
+        b"%D0%90%D0%BD%D1%96%D0%BC%D0%B5/daily/20260801/20260803",
+    ]
+    assert [(item.month, item.views, item.status, item.granularity) for item in observations] == [
+        (date(2026, 8, 1), 25, ObservationStatus.OBSERVED, Granularity.DAILY),
+        (date(2026, 8, 2), None, ObservationStatus.UNKNOWN, Granularity.DAILY),
+        (date(2026, 8, 3), 40, ObservationStatus.OBSERVED, Granularity.DAILY),
+    ]
+
+
+def test_daily_project_pageviews_use_daily_aggregate_endpoint() -> None:
+    raw_paths: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raw_paths.append(request.url.raw_path)
+        return httpx.Response(200, json={"items": [{"timestamp": "2026080100", "views": 1000}]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        observations = WikimediaPageviewsClient(http_client=http_client).get_project_pageviews(
+            "ja.wikipedia",
+            "2026-08-01",
+            "2026-08-01",
+            granularity=Granularity.DAILY,
+        )
+
+    assert raw_paths == [
+        b"/api/rest_v1/metrics/pageviews/aggregate/ja.wikipedia/all-access/user/daily/20260801/20260801",
+    ]
+    assert len(observations) == 1
+    assert observations[0].views == 1000
 def test_absent_api_month_becomes_unknown_in_complete_requested_range() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(

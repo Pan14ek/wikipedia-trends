@@ -13,6 +13,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final, Literal
 
+from wiki_trends.models import Granularity
+
 __all__ = [
     "CacheNamespace",
     "CacheRetrieval",
@@ -138,14 +140,20 @@ def default_cache_path() -> Path:
     return Path(configured_path) if configured_path else _DEFAULT_CACHE_PATH
 
 
-def pageviews_ttl(end_month: date, reference_date: date | None = None) -> timedelta:
-    """Choose the documented historical or recent Pageviews freshness window."""
-    if end_month.day != 1:
-        raise ValueError("'end_month' must identify the first day of a month")
+def pageviews_ttl(
+    end_period: date,
+    reference_date: date | None = None,
+    granularity: Granularity = Granularity.MONTHLY,
+) -> timedelta:
+    """Choose a freshness window suitable for recent or historical buckets."""
     reference = reference_date or date.today()
+    if granularity is Granularity.DAILY:
+        return _RECENT_PAGEVIEWS_TTL if end_period >= reference - timedelta(days=2) else _HISTORICAL_PAGEVIEWS_TTL
+    if end_period.day != 1:
+        raise ValueError("monthly 'end_period' must identify the first day of a month")
     latest_complete_month = _previous_month(reference)
     earliest_recent_month = _previous_month(latest_complete_month)
-    return _RECENT_PAGEVIEWS_TTL if end_month >= earliest_recent_month else _HISTORICAL_PAGEVIEWS_TTL
+    return _RECENT_PAGEVIEWS_TTL if end_period >= earliest_recent_month else _HISTORICAL_PAGEVIEWS_TTL
 
 
 def resolution_ttl() -> timedelta:

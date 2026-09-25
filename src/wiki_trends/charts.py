@@ -11,9 +11,9 @@ import matplotlib
 matplotlib.use("Agg", force=True)
 
 from matplotlib import pyplot as plt
-from matplotlib.dates import DateFormatter, MonthLocator
+from matplotlib.dates import DateFormatter, DayLocator, MonthLocator
 
-from wiki_trends.models import MonthlyPageview, ObservationStatus
+from wiki_trends.models import Granularity, MonthlyPageview, ObservationStatus
 
 __all__ = ["render_comparison_charts", "render_multi_language_trend_chart", "render_trend_chart"]
 
@@ -70,12 +70,17 @@ def render_trend_chart(
             markersize=3,
         )
         axis.set_title(title)
-        axis.set_xlabel("Month")
+        granularity = ordered_series[0].granularity
+        axis.set_xlabel("Date" if granularity is Granularity.DAILY else "Month")
         axis.set_ylabel("Pageviews")
         axis.set_ylim(bottom=0)
         axis.grid(axis="y", alpha=0.3)
 
-        locator = MonthLocator(interval=_month_tick_interval(len(months)))  # type: ignore[no-untyped-call]
+        locator = (
+            DayLocator(interval=max(1, len(months) // 12))  # type: ignore[no-untyped-call]
+            if granularity is Granularity.DAILY
+            else MonthLocator(interval=_month_tick_interval(len(months)))  # type: ignore[no-untyped-call]
+        )
         axis.xaxis.set_major_locator(locator)
         axis.xaxis.set_major_formatter(DateFormatter("%b\n%Y"))  # type: ignore[no-untyped-call]
         figure.tight_layout()

@@ -10,6 +10,7 @@ from wiki_trends.models import (
     AnomalyDetectionMethod,
     AnomalyDirection,
     AnomalyRecord,
+    Granularity,
     MonthlyPageview,
     ObservationStatus,
 )
@@ -128,7 +129,11 @@ def _anomaly_record(
     if observation.views is None:
         raise ValueError("anomaly records require a known pageview count")
     return AnomalyRecord(
-        month=observation.month.strftime("%Y-%m"),
+        month=(
+            observation.month.isoformat()
+            if observation.granularity is Granularity.DAILY
+            else observation.month.strftime("%Y-%m")
+        ),
         views=observation.views,
         direction=AnomalyDirection.HIGH if score > 0 else AnomalyDirection.LOW,
         score=score,

@@ -67,6 +67,7 @@ def _report(languages: list[str]) -> AnalysisReport:
             )
         ],
         period=period,
+        requested_period=period,
         languages={
             language: LanguageReport(
                 pageviews=pageviews,

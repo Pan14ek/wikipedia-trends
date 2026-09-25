@@ -9,6 +9,7 @@ from statistics import median
 from wiki_trends.models import (
     AbsoluteMetrics,
     AbsoluteMetricsStatus,
+    Granularity,
     MonthlyPageview,
     ObservationStatus,
     YoYMetrics,
@@ -44,17 +45,22 @@ def aggregate_topic_pageviews(article_series: Sequence[Sequence[MonthlyPageview]
         raise ValueError("'article_series' must contain at least one selected article series")
     if len(article_series) > 3:
         raise ValueError("'article_series' must contain no more than three selected article series")
+    granularities = {item.granularity for series in article_series for item in series}
+    if len(granularities) > 1:
+        raise ValueError("topic article series must use the same granularity")
+    granularity = next(iter(granularities), None)
 
     indexed_series = [
         _index_by_month(series, f"article_series[{index}]") for index, series in enumerate(article_series)
     ]
     months = sorted({month for series in indexed_series for month in series})
-    return [_aggregate_topic_month(month, indexed_series) for month in months]
+    return [_aggregate_topic_month(month, indexed_series, granularity) for month in months]
 
 
 def _aggregate_topic_month(
     month: date,
     indexed_series: Sequence[dict[date, MonthlyPageview]],
+    granularity: Granularity | None,
 ) -> MonthlyPageview:
     """Aggregate one calendar month from the available article observations."""
     available_views = [
@@ -65,8 +71,12 @@ def _aggregate_topic_month(
         and observation.views is not None
     ]
     if not available_views:
-        return MonthlyPageview(month=month, status=ObservationStatus.UNKNOWN)
-    return MonthlyPageview(month=month, views=sum(available_views))
+        return MonthlyPageview(
+            month=month,
+            granularity=granularity or Granularity.MONTHLY,
+            status=ObservationStatus.UNKNOWN,
+        )
+    return MonthlyPageview(month=month, granularity=granularity or Granularity.MONTHLY, views=sum(available_views))
 
 
 def compute_absolute_metrics(monthly_pageviews: Sequence[MonthlyPageview]) -> AbsoluteMetrics:
@@ -133,6 +143,8 @@ def compute_yoy_metrics(monthly_pageviews: Sequence[MonthlyPageview]) -> YoYMetr
         ValueError: If the input contains duplicate calendar-month observations.
     """
     observations_by_month = _index_by_month(monthly_pageviews, "monthly_pageviews")
+    if any(item.granularity.value != "monthly" for item in monthly_pageviews):
+        return _unavailable_yoy(YoYStatus.INSUFFICIENT_DATA, "Calendar YoY is only defined for monthly observations.")
     if not observations_by_month:
         return _unavailable_yoy(
             YoYStatus.INSUFFICIENT_DATA,

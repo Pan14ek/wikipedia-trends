@@ -7,6 +7,7 @@ from datetime import date
 from statistics import median
 
 from wiki_trends.models import (
+    Granularity,
     MonthlyPageview,
     NormalizedInterest,
     NormalizedInterestPoint,
@@ -42,9 +43,13 @@ def compute_normalized_interest(
     """
     articles_by_month = _index_by_month(article_pageviews, "article_pageviews")
     projects_by_month = _index_by_month(project_pageviews, "project_pageviews")
+    granularities = {item.granularity for item in (*article_pageviews, *project_pageviews)}
+    if len(granularities) > 1:
+        raise ValueError("article and project pageview series must use the same granularity")
+    granularity = next(iter(granularities), Granularity.MONTHLY)
 
     monthly = [
-        _normalize_month(month, articles_by_month.get(month), projects_by_month.get(month))
+        _normalize_month(month, articles_by_month.get(month), projects_by_month.get(month), granularity)
         for month in sorted(articles_by_month.keys() | projects_by_month.keys())
     ]
     known_values = [point.value for point in monthly if point.value is not None]
@@ -75,6 +80,7 @@ def _normalize_month(
     month: date,
     article: MonthlyPageview | None,
     project: MonthlyPageview | None,
+    granularity: Granularity,
 ) -> NormalizedInterestPoint:
     """Calculate one month only when the numerator and denominator align."""
     if (
@@ -86,9 +92,10 @@ def _normalize_month(
         or project.views is None
         or project.views == 0
     ):
-        return NormalizedInterestPoint(month=month, status=ObservationStatus.UNKNOWN)
+        return NormalizedInterestPoint(month=month, granularity=granularity, status=ObservationStatus.UNKNOWN)
 
     return NormalizedInterestPoint(
         month=month,
+        granularity=granularity,
         value=(article.views / project.views) * _PER_MILLION,
     )
