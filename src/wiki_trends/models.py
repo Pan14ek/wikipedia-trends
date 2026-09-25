@@ -20,7 +20,11 @@ __all__ = [
     "ArticleResolution",
     "ConfidenceInterval",
     "ConfidenceIntervalStatus",
+    "ComparisonPeriod",
+    "LanguageComparisonInput",
+    "LanguageComparisonMetrics",
     "MissingLanguageEquivalent",
+    "MultiLanguageComparison",
     "MonthlyPageview",
     "NormalizedInterest",
     "NormalizedInterestPoint",
@@ -509,4 +513,109 @@ class TopicResolution(BaseModel):
                 raise ValueError("clarification topic results require details and no selected articles")
         else:
             raise ValueError("topic resolution does not support partial status")
+        return self
+
+
+class ComparisonPeriod(BaseModel):
+    """The explicit common calendar span used for direct language comparison."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: date
+    end: date
+
+    @field_validator("start", "end")
+    @classmethod
+    def month_must_start_on_first_day(cls, month: date) -> date:
+        """Require canonical month identifiers for shared-period reporting."""
+        if month.day != 1:
+            raise ValueError("comparison period dates must be the first day of the month")
+        return month
+
+    @model_validator(mode="after")
+    def start_must_not_follow_end(self) -> ComparisonPeriod:
+        """Keep a comparison period chronologically valid."""
+        if self.start > self.end:
+            raise ValueError("comparison period start must not follow end")
+        return self
+
+
+class LanguageComparisonInput(BaseModel):
+    """One language's pageview evidence before multi-language alignment."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    language: str = Field(min_length=1)
+    pageviews: list[MonthlyPageview] = Field(default_factory=list)
+    normalized_interest: NormalizedInterest | None = None
+    resolved: bool = True
+    resolution_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_resolution_state(self) -> LanguageComparisonInput:
+        """Require an explainable reason when a language has no equivalent."""
+        months = [observation.month for observation in self.pageviews]
+        if len(months) != len(set(months)):
+            raise ValueError("language comparison inputs must not contain duplicate pageview months")
+        if self.resolved:
+            if self.resolution_reason is not None:
+                raise ValueError("resolved language comparison inputs must not include a resolution reason")
+        elif self.resolution_reason is None:
+            raise ValueError("unresolved language comparison inputs require a resolution reason")
+        elif self.pageviews:
+            raise ValueError("unresolved language comparison inputs must not include pageviews")
+        return self
+
+
+class LanguageComparisonMetrics(BaseModel):
+    """Comparable metrics and language-local caveats for one edition."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    language: str = Field(min_length=1)
+    absolute_metrics: AbsoluteMetrics | None = None
+    normalized_interest: NormalizedInterest | None = None
+    yoy_metrics: YoYMetrics | None = None
+    requested_months: int = Field(ge=0)
+    available_months: int = Field(ge=0)
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_metric_availability(self) -> LanguageComparisonMetrics:
+        """Keep unavailable-language metrics distinct from a zero-valued series."""
+        if self.available_months > self.requested_months:
+            raise ValueError("available_months must not exceed requested_months")
+        if self.absolute_metrics is None and (
+            self.normalized_interest is not None or self.yoy_metrics is not None or not self.warnings
+        ):
+            raise ValueError("unavailable language metrics require warnings and no calculated metrics")
+        return self
+
+
+class MultiLanguageComparison(BaseModel):
+    """Typed, explanation-first output for one aligned language comparison."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    languages: list[str] = Field(min_length=2, max_length=20)
+    effective_period: ComparisonPeriod | None = None
+    comparable: bool
+    normalized_comparable: bool
+    warnings: list[str] = Field(default_factory=list)
+    metrics_by_language: dict[str, LanguageComparisonMetrics]
+    comparison_validity: QualityCheck
+
+    @model_validator(mode="after")
+    def validate_comparison_shape(self) -> MultiLanguageComparison:
+        """Require one metrics record and a validity check for every language."""
+        if len(self.languages) != len(set(self.languages)):
+            raise ValueError("comparison languages must be unique")
+        if set(self.metrics_by_language) != set(self.languages):
+            raise ValueError("comparison metrics must contain exactly the requested languages")
+        if any(metrics.language != language for language, metrics in self.metrics_by_language.items()):
+            raise ValueError("comparison metrics keys must match their language field")
+        if self.comparison_validity.id is not QualityCheckId.COMPARISON_VALIDITY:
+            raise ValueError("comparison output requires the comparison_validity quality check")
+        if self.comparable and self.effective_period is None:
+            raise ValueError("comparable output requires an effective comparison period")
         return self

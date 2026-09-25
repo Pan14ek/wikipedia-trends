@@ -181,3 +181,31 @@ caveat. Topic totals are article pageviews, not unique readers: readers may
 visit more than one selected page, so summed views can include overlapping
 audiences. M12 does not compare language editions, assemble the final JSON
 report, cache responses, or infer a web-scale semantic topic model.
+
+## M13 Multi-language comparison
+
+M13 accepts two through twenty typed language inputs and preserves each
+language's local completeness and resolution warnings. A missing language
+equivalent is represented as unresolved with a reason; it does not become a
+zero-valued series or silently disappear from the requested comparison.
+
+For direct absolute metrics, M13 first intersects the calendar months supplied
+by every resolved language, then retains only the months whose pageview value
+is known in every language. The resulting effective period records the first
+and last shared known months, while warnings state when requested windows
+differ or shared months were excluded. A direct comparison is valid only when
+all requested languages resolve, every language meets the 75% completeness
+minimum, and at least 12 shared known months remain. The comparison-validity
+quality check is `pass`, `warning`, or `fail` using those explicit conditions.
+
+Normalized interest is compared only over the further shared subset where
+every language has a known normalized value. It remains article pageviews per
+1,000,000 pageviews for that language's own Wikipedia project; it is not a
+country-level demand measure. No Python calculation ranks languages as a best
+market or emits an opportunity score.
+
+M13 charts show one labelled line per language with gaps for unknown months.
+The caller supplies a subject-and-period title. Up to six languages render in
+one chart with a required legend; seven through twenty use separate
+per-language PNGs to avoid an unreadable shared legend. Final JSON-report
+assembly and PDF reporting remain deferred to later milestones.

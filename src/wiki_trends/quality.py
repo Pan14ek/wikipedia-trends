@@ -38,6 +38,7 @@ def evaluate_quality(
     yoy_metrics: YoYMetrics | None = None,
     anomaly_detection: AnomalyDetection | None = None,
     spike_sensitivity_threshold_pct: float = 10.0,
+    comparison_validity: QualityCheck | None = None,
 ) -> QualityReport:
     """Evaluate the six M08 quality checks without changing supplied analysis data.
 
@@ -52,6 +53,8 @@ def evaluate_quality(
             detector runs against ``monthly_pageviews``.
         spike_sensitivity_threshold_pct: Minimum absolute YoY difference in
             percentage points that is material. Defaults to 10.
+        comparison_validity: M13's shared-comparison quality finding, when a
+            multi-language comparison has been performed.
 
     Returns:
         A report containing each check exactly once. A ``fail`` is local to
@@ -63,6 +66,7 @@ def evaluate_quality(
     """
     _validate_unique_months(monthly_pageviews)
     _validate_spike_sensitivity_threshold(spike_sensitivity_threshold_pct)
+    _validate_comparison_validity(comparison_validity)
     detection = anomaly_detection or detect_anomalies(monthly_pageviews)
     return QualityReport(
         checks=[
@@ -76,10 +80,11 @@ def evaluate_quality(
                 detection,
                 spike_sensitivity_threshold_pct,
             ),
-            _not_evaluated_check(
+            comparison_validity
+            or _not_evaluated_check(
                 QualityCheckId.COMPARISON_VALIDITY,
-                "Comparison validity has not been evaluated because multi-language comparison is not implemented until M13.",
-                "M13 multi-language comparison",
+                "Comparison validity was not supplied, so multi-language comparison has not been evaluated.",
+                "M13 multi-language comparison result not supplied",
             ),
         ]
     )
@@ -357,6 +362,12 @@ def _validate_spike_sensitivity_threshold(threshold_pct: float) -> None:
     """Reject non-finite and negative materiality thresholds at the API boundary."""
     if not isfinite(threshold_pct) or threshold_pct < 0:
         raise ValueError("spike_sensitivity_threshold_pct must be a finite non-negative percentage")
+
+
+def _validate_comparison_validity(comparison_validity: QualityCheck | None) -> None:
+    """Reject a mismatched quality check at the M13 integration boundary."""
+    if comparison_validity is not None and comparison_validity.id is not QualityCheckId.COMPARISON_VALIDITY:
+        raise ValueError("comparison_validity must use the comparison_validity check ID")
 
 
 def _not_evaluated_check(check_id: QualityCheckId, message: str, dependency: str) -> QualityCheck:
