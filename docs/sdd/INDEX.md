@@ -27,3 +27,4 @@ Implementation order:
 - [M22.1 — Documentation and Status Synchronization](M22.1-documentation-status-synchronization.md)
 - [M23 — Source-Language Contract and Canonical Scenario Hardening](M23-source-language-contract-and-canonical-scenario-hardening.md)
 - [M24 — Unresolved and Partial Artifact Resilience](M24-unresolved-partial-artifact-resilience.md)
+- [M18.1 — Inexpensive-Model Revalidation After Correctness and CLI Remediation](M18.1-inexpensive-model-revalidation-after-remediation.md)
