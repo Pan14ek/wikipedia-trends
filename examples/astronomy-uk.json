@@ -1,7 +1,8 @@
 {
   "query": {
     "mode": "article",
-    "value": "Astronomy"
+    "value": "Astronomy",
+    "source_language": "en"
   },
   "languages": ["uk"],
   "period": {

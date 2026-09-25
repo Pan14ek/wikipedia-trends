@@ -70,6 +70,13 @@ asking for values the user did not need to specify. Read
 [`input-schema.md`](references/input-schema.md) when building or changing a
 config.
 
+`query.source_language` is the Wikipedia language in which the supplied article
+title or topic phrase is resolved. It is independent of requested `languages`
+and may be outside them. It is required for multiple target editions. For one
+target edition, omit it only when the supplied title or phrase is intentionally
+expressed for that edition; runtime inference is not safe for a phrase in a
+different language.
+
 ## Choose a Workflow
 
 Read only the workflow references relevant to the current request. A request

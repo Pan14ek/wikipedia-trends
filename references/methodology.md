@@ -51,9 +51,13 @@ total-based percentage because the compared known-month positions are paired.
 ## M04 Article resolution
 
 For `query.mode = article`, M04 first resolves the requested title in an
-explicit source language. A source language is inferred only for a one-language
-request; multi-language requests must provide `query.source_language` rather
-than relying on title translation or guessing. MediaWiki's `redirects=1` lookup
+explicit source language. `query.source_language` identifies the Wikipedia
+edition in which the supplied title is interpreted; it is independent of the
+requested metric editions. Runtime inference remains available for a
+one-language request, but agents should rely on it only when the supplied title
+is intentionally in that target edition's language. Multi-language requests
+must provide `query.source_language` rather than relying on title translation
+or guessing. MediaWiki's `redirects=1` lookup
 returns the canonical title, page ID, canonical URL, Wikidata item, and language
 links. A disambiguation page produces a structured
 `requires_clarification` result and is never selected as an article.
@@ -152,8 +156,12 @@ demand, willingness to pay, or causal product opportunity.
 ## M12 Topic mode
 
 WT-M20 supersedes M12's independent per-language search and rank-plus-title
-overlap selection. Topic mode requires one source language for multi-language
-requests. MediaWiki search in that edition discovers up to five candidates;
+overlap selection. `query.source_language` identifies the language of the topic
+phrase, independently of requested metric editions. Runtime inference remains
+available for one-language requests, but agents should rely on it only when the
+phrase is intentionally in that target edition's language. Topic mode requires
+an explicit source language for multi-language requests. MediaWiki search in
+that edition discovers up to five candidates;
 search rank is stored and used only to break ties after semantic acceptance.
 For each candidate the resolver records normalized title, Wikidata label,
 aliases, and description evidence. Lexical normalization uses Unicode NFKC,

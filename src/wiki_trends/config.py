@@ -211,6 +211,10 @@ class AnalysisConfig(BaseModel):
     @model_validator(mode="after")
     def validate_analysis_contract(self) -> AnalysisConfig:
         """Validate cross-field constraints before data retrieval starts."""
+        if len(self.languages) > 1 and self.query.source_language is None:
+            raise ValueError(
+                "query.source_language is required when analyzing multiple Wikipedia language editions"
+            )
         unknown_override_languages = set(self.query.article_overrides) - set(self.languages)
         if unknown_override_languages:
             unknown_languages = ", ".join(sorted(unknown_override_languages))

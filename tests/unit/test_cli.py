@@ -83,6 +83,39 @@ def test_configuration_failure_is_structured_on_stderr(tmp_path: Path, capsys: p
     assert "languages must be unique" in error["message"]
 
 
+@pytest.mark.parametrize(
+    ("mode", "languages"),
+    [("article", ["pl", "cs"]), ("topic", ["pl", "cs", "uk"])],
+)
+def test_missing_multi_language_source_is_configuration_error_before_pipeline(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    languages: list[str],
+) -> None:
+    config_path = tmp_path / "invalid-source-language.json"
+    config_path.write_text(
+        json.dumps({"query": {"mode": mode, "value": "learning English"}, "languages": languages}),
+        encoding="utf-8",
+    )
+
+    def pipeline_must_not_run(_: object, __: Path) -> AnalysisRunResult:
+        pytest.fail("pipeline must not run for an invalid configuration")
+
+    monkeypatch.setattr(cli, "run_analysis", pipeline_must_not_run)
+
+    assert cli.main(["--config", str(config_path)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    error = json.loads(captured.err)
+    assert error["cli_schema_version"] == "1.0.0"
+    assert error["status"] == "error"
+    assert error["error_type"] == "configuration_error"
+    assert "query.source_language" in error["message"]
+    assert "multiple Wikipedia language editions" in error["message"]
+
+
 def test_analysis_failure_is_structured_on_stderr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -818,11 +818,14 @@ Full calendar-month windows default to monthly granularity.
 
 ### Source language
 
-A one-language request can infer its source language from that edition.
+`source_language` identifies the edition used to resolve the supplied title or
+topic phrase, while `languages` selects editions to analyze. For example,
+`source_language: "en"` with `languages: ["uk"]` resolves an English phrase
+and analyzes Ukrainian Wikipedia.
 
-Multi-language requests require a source language because Wikipedia Trends must know which edition owns the source title or topic phrase.
-
-It does not silently assume English.
+Multi-language requests require `source_language`. For a one-language request,
+runtime inference is safe only when the phrase is intentionally expressed in
+that target edition's language.
 
 For the complete configuration contract, see:
 

@@ -121,6 +121,40 @@ def test_wikidata_sitelink_resolves_a_second_language_edition() -> None:
     assert result.articles[1].wikidata_id == "Q333"
 
 
+def test_source_language_outside_targets_resolves_canonical_target_sitelink() -> None:
+    request_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_hosts.append(request.url.host or "")
+        if request.url.host == "en.wikipedia.org":
+            assert request.url.params["titles"] == "Astronomy"
+            return httpx.Response(200, json=_page("Astronomy", 18831, wikidata_id="Q333"))
+        if request.url.host == "www.wikidata.org":
+            return httpx.Response(
+                200,
+                json=_wikidata_entity("Q333", {"enwiki": "Astronomy", "ukwiki": "Астрономія"}),
+            )
+        if request.url.host == "uk.wikipedia.org":
+            assert request.url.params["titles"] == "Астрономія"
+            return httpx.Response(200, json=_page("Астрономія", 42, wikidata_id="Q333"))
+        pytest.fail(f"unexpected host {request.url.host}")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = ArticleResolver(http_client=http_client).resolve_article(
+            "Astronomy",
+            ["uk"],
+            source_language="en",
+        )
+
+    assert request_hosts[0] == "en.wikipedia.org"
+    assert "uk.wikipedia.org" in request_hosts
+    assert "www.wikidata.org" in request_hosts
+    assert [article.language for article in result.articles] == ["uk"]
+    assert result.articles[0].canonical_title == "Астрономія"
+    assert result.articles[0].resolution_method is ResolutionMethod.WIKIDATA_SITELINK
+    assert result.articles[0].wikidata_id == "Q333"
+
+
 def test_mediawiki_language_link_is_used_when_no_wikidata_item_is_available() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "en.wikipedia.org":

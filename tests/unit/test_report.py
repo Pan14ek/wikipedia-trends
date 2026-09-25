@@ -36,7 +36,7 @@ from wiki_trends.report import (
 def _config(mode: str = "article", languages: list[str] | None = None) -> AnalysisConfig:
     return AnalysisConfig.model_validate(
         {
-            "query": {"mode": mode, "value": "Kyiv"},
+            "query": {"mode": mode, "value": "Kyiv", "source_language": "en"},
             "languages": languages or ["en"],
             "output": {"json": True, "charts": False, "pdf": False},
         }

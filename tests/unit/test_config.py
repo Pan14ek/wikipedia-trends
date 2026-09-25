@@ -32,10 +32,39 @@ def test_minimal_valid_config_applies_defaults() -> None:
     assert config.output.model_dump(by_alias=True) == {"json": True, "charts": True, "pdf": True}
 
 
+@pytest.mark.parametrize(
+    ("mode", "languages"),
+    [("article", ["pl", "cs"]), ("topic", ["pl", "cs", "uk"])],
+)
+def test_multi_language_config_requires_source_language(mode: str, languages: list[str]) -> None:
+    with pytest.raises(ValidationError, match="query.source_language.*multiple Wikipedia language editions"):
+        AnalysisConfig.model_validate({"query": {"mode": mode, "value": "Astronomy"}, "languages": languages})
+
+
+@pytest.mark.parametrize(
+    ("mode", "languages"),
+    [
+        ("article", ["uk"]),
+        ("article", ["pl", "cs"]),
+        ("topic", ["pl", "cs", "uk"]),
+    ],
+)
+def test_explicit_source_language_can_be_outside_target_languages(mode: str, languages: list[str]) -> None:
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": mode, "value": "Astronomy", "source_language": "en"},
+            "languages": languages,
+        }
+    )
+
+    assert config.query.source_language == "en"
+    assert config.languages == languages
+
+
 def test_fully_specified_config_loads() -> None:
     config = AnalysisConfig.model_validate(
         {
-            "query": {"mode": "topic", "value": "Space science"},
+            "query": {"mode": "topic", "value": "Space science", "source_language": "en"},
             "languages": ["uk", "en"],
             "period": {"months": 36, "granularity": "monthly"},
             "criteria": {
@@ -170,7 +199,7 @@ def test_explicit_partial_month_dates_infer_daily_granularity() -> None:
 def test_growth_threshold_accepts_explicit_preceding_baseline() -> None:
     config = AnalysisConfig.model_validate(
         {
-            "query": {"mode": "topic", "value": "space science"},
+            "query": {"mode": "topic", "value": "space science", "source_language": "en"},
             "languages": ["pl", "cs"],
             "period": {"start": "2026-08-01", "end": "2026-08-31"},
             "comparison_period": {

@@ -22,9 +22,14 @@ at every level.
 
 `query.mode` is either `article` or `topic`; `query.value` is a non-empty
 trimmed string. `query.source_language` is used by article and topic resolution.
-It is required for multi-language requests, since the resolver must not guess
-which language edition owns a title or topic phrase. For one requested
-language it is inferred from that language. For
+It is the language in which the supplied title or topic phrase is interpreted;
+`languages` selects the Wikipedia editions whose metrics are requested. These
+fields are independent: `source_language` does not need to appear in
+`languages`. For example, the config above resolves “Astronomy” in English and
+analyzes Ukrainian Wikipedia only. `source_language` is required for requests
+with multiple target editions. Runtime inference remains available for one
+requested edition, but agents should omit it only when the supplied title or
+phrase is intentionally expressed in that edition's language. For
 `query.mode = "topic"`, `query.article_overrides` can replace MediaWiki search
 selection for reviewed languages. It is an optional object keyed by a language
 included in `languages`; each key supplies one to three unique, non-empty
