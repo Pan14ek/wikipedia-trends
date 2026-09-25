@@ -145,9 +145,16 @@ def test_monthly_pageview_distinguishes_missing_observations() -> None:
         MonthlyPageview(month=date(2026, 8, 2), views=1)
 
 
-def test_cli_prints_a_placeholder_for_valid_config() -> None:
+def test_cli_prints_generated_artifact_paths_for_valid_config(tmp_path: Path) -> None:
     result = subprocess.run(
-        [sys.executable, "scripts/analyze.py", "--config", "examples/astronomy-uk.json"],
+        [
+            sys.executable,
+            "scripts/analyze.py",
+            "--config",
+            "examples/astronomy-uk.json",
+            "--output-dir",
+            str(tmp_path / "output"),
+        ],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
@@ -155,7 +162,8 @@ def test_cli_prints_a_placeholder_for_valid_config() -> None:
     )
 
     assert result.returncode == 0
-    assert json.loads(result.stdout)["status"] == "validated"
+    artifact_paths = json.loads(result.stdout)
+    assert set(artifact_paths) == {"analysis_json", "chart", "pdf"}
 
 
 def test_cli_returns_nonzero_for_invalid_config(tmp_path: Path) -> None:
