@@ -18,6 +18,8 @@ __all__ = [
     "AnomalyDirection",
     "AnomalyRecord",
     "ArticleResolution",
+    "ConfidenceInterval",
+    "ConfidenceIntervalStatus",
     "MissingLanguageEquivalent",
     "MonthlyPageview",
     "NormalizedInterest",
@@ -344,6 +346,44 @@ class YoYMetrics(BaseModel):
                 raise ValueError("unavailable YoY metrics must not include totals or growth percentages")
             if not self.notes:
                 raise ValueError("unavailable YoY metrics require an explanatory note")
+        return self
+
+
+class ConfidenceIntervalStatus(StrEnum):
+    """Whether a bootstrap confidence interval could be calculated."""
+
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+
+
+class ConfidenceInterval(BaseModel):
+    """Bootstrap uncertainty bounds for calendar-aligned YoY growth.
+
+    The interval describes variation in the supplied monthly observations under
+    the documented bootstrap procedure. It is not a market-demand estimate.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: Literal["yoy_growth_pct"] = "yoy_growth_pct"
+    method: Literal["paired_month_bootstrap"] = "paired_month_bootstrap"
+    level: float = Field(gt=0, lt=1)
+    iterations: int = Field(gt=0)
+    seed: int
+    lower: float | None = None
+    upper: float | None = None
+    status: ConfidenceIntervalStatus
+
+    @model_validator(mode="after")
+    def validate_interval_state(self) -> ConfidenceInterval:
+        """Require bounds exactly when the bootstrap produced valid samples."""
+        if self.status is ConfidenceIntervalStatus.AVAILABLE:
+            if self.lower is None or self.upper is None:
+                raise ValueError("available confidence intervals require lower and upper bounds")
+            if self.lower > self.upper:
+                raise ValueError("confidence interval lower bound must not exceed its upper bound")
+        elif self.lower is not None or self.upper is not None:
+            raise ValueError("unavailable confidence intervals must not include bounds")
         return self
 
 

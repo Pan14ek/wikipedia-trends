@@ -132,3 +132,19 @@ contribution and recalculates YoY. It warns when the YoY direction changes or
 the magnitude differs by more than the configurable 10-percentage-point
 default. This is a diagnostic warning, not an automatic rejection. Comparison
 validity remains `not_evaluated` until M13 multi-language comparison.
+
+## M11 Bootstrap confidence intervals
+
+M11 estimates a percentile bootstrap interval for calendar-aligned YoY growth.
+It forms pairs only where both matching months in the latest previous and
+recent 12-month windows have known values. Each of 2,000 deterministic
+resamples (seed 42 by default) draws those paired month positions with
+replacement, sums the previous and recent values separately, then calculates
+YoY from the resampled totals. The reported 95% interval uses the 2.5th and
+97.5th percentiles. Fewer than eight valid month pairs, or an all-zero
+resampled baseline, produces an explicit `unavailable` result; individual
+zero-baseline resamples are excluded because their YoY percentage is undefined.
+
+This interval quantifies variability in the observed monthly series under the
+chosen bootstrap procedure. It is not a confidence interval for total market
+demand, willingness to pay, or causal product opportunity.
