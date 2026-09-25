@@ -199,7 +199,7 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> AnalysisRunResult
             warnings=(
                 _topic_language_warnings(topic_resolution_by_language.get(language), bool(series))
                 if topic_mode
-                else ([] if series else ["No resolved article is available."])
+                else _article_language_warnings(article_resolution, language, bool(series))
             ),
         )
     comparison = (
@@ -238,21 +238,33 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> AnalysisRunResult
         artifacts=ReportArtifacts(),
     )
 
+    presentation_series = {language: series for language, series in language_series.items() if series}
     chart_paths: list[Path] = []
     pdf_path: Path | None = None
     if config.output.charts or config.output.pdf:
-        chart_path = output_root / f"{slug}-trend.png"
-        generated_charts = (
-            render_comparison_charts(language_series, config.query.value, chart_path)
-            if len(language_series) > 1
-            else [render_trend_chart(next(iter(language_series.values())), config.query.value, chart_path)]
-        )
-        if config.output.charts:
-            chart_paths = generated_charts
-            report.artifacts.charts = [str(chart) for chart in chart_paths]
-        if config.output.pdf:
-            pdf_path = write_pdf_report(report, generated_charts[0], output_root / "pdf")
-            report.artifacts.pdf = str(pdf_path)
+        if not presentation_series:
+            if config.output.charts:
+                report.warnings.append(
+                    "No requested language produced an analyzable pageview series; requested chart output was not generated."
+                )
+            if config.output.pdf:
+                report.warnings.append(
+                    "PDF output was not generated because the current one-page PDF layout requires at least one analyzable trend series."
+                )
+        else:
+            chart_path = output_root / f"{slug}-trend.png"
+            if len(presentation_series) > 1:
+                generated_charts = render_comparison_charts(presentation_series, config.query.value, chart_path)
+            else:
+                generated_charts = [
+                    render_trend_chart(next(iter(presentation_series.values())), config.query.value, chart_path)
+                ]
+            if config.output.charts:
+                chart_paths = generated_charts
+                report.artifacts.charts = [str(chart) for chart in chart_paths]
+            if config.output.pdf:
+                pdf_path = write_pdf_report(report, generated_charts[0], output_root / "pdf")
+                report.artifacts.pdf = str(pdf_path)
     json_path = write_analysis_report(report, output_root) if config.output.json_output else None
     _LOGGER.info(
         "analysis completed",
@@ -291,6 +303,27 @@ def _topic_language_warnings(resolution: TopicResolution | None, has_series: boo
             f"Explicit proxy override ({titles}) has a different Wikidata concept set; metrics describe the selected articles only."
         ]
     return []
+
+
+def _article_language_warnings(
+    resolution: ArticleResolution | None,
+    language: str,
+    has_series: bool,
+) -> list[str]:
+    """Explain why a requested article edition has no collected pageviews."""
+    if has_series:
+        return []
+    missing = (
+        next(
+            (item for item in resolution.missing_languages if item.language == language),
+            None,
+        )
+        if resolution is not None
+        else None
+    )
+    if missing is not None:
+        return [f"No resolved article is available for '{language}': {missing.reason}."]
+    return [f"No resolved article is available for '{language}'."]
 
 
 def _report_baseline(config: AnalysisConfig) -> ReportPeriod | None:

@@ -16,7 +16,9 @@ from wiki_trends.config import AnalysisConfig
 from wiki_trends.models import (
     ArticleResolution,
     Granularity,
+    MissingLanguageEquivalent,
     MonthlyPageview,
+    ResolutionClarification,
     ResolutionMethod,
     ResolutionStatus,
     ResolvedArticle,
@@ -33,7 +35,11 @@ from wiki_trends.wikipedia_client import PageviewsFetchResult
     [
         ("astronomy", {"mode": "article", "value": "Astronomy", "source_language": "en"}, ["uk"]),
         ("fasting", {"mode": "article", "value": "Intermittent fasting", "source_language": "en"}, ["pl", "cs"]),
-        ("learning-english", {"mode": "topic", "value": "learning English", "source_language": "en"}, ["pl", "cs", "uk"]),
+        (
+            "learning-english",
+            {"mode": "topic", "value": "learning English", "source_language": "en"},
+            ["pl", "cs", "uk"],
+        ),
     ],
 )
 def test_cli_invokes_the_shared_analysis_pipeline(
@@ -122,6 +128,8 @@ class _CountingTopicPageviews(_Pageviews):
             "English language": 100,
             "English as a second or foreign language": 200,
             "English literature": 300,
+            "Astronomia": 100,
+            "Astronomie": 200,
         }
         return PageviewsFetchResult(_series(start, end, granularity, views=views_by_article[article]), "network")
 
@@ -230,7 +238,7 @@ def test_seven_language_pipeline_returns_every_generated_chart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The pipeline returns actual per-language charts, never its unused base name."""
-    languages = ["en", "uk", "pl", "cs", "de", "fr", "es"]
+    languages = ["en", "uk", "pl", "cs", "de", "fr", "es", "it"]
     config = AnalysisConfig.model_validate(
         {
             "query": {"mode": "article", "value": "Astronomy", "source_language": "en"},
@@ -241,8 +249,16 @@ def test_seven_language_pipeline_returns_every_generated_chart(
     resolution = ArticleResolution(
         requested_title="Astronomy",
         source_language="en",
-        status=ResolutionStatus.RESOLVED,
-        articles=[_article(language, "Astronomy") for language in languages],
+        status=ResolutionStatus.PARTIAL,
+        articles=[_article(language, "Astronomy") for language in languages if language != "it"],
+        missing_languages=[
+            MissingLanguageEquivalent(
+                language="it",
+                project="it.wikipedia",
+                requested_title="Astronomy",
+                reason="no linked equivalent",
+            )
+        ],
     )
     monkeypatch.setattr(pipeline, "ArticleResolver", lambda: _Resolver(resolution))
     monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", _Pageviews)
@@ -252,6 +268,7 @@ def test_seven_language_pipeline_returns_every_generated_chart(
         series_by_language: dict[str, list[MonthlyPageview]], title: str, base_path: Path
     ) -> list[Path]:
         del title
+        assert set(series_by_language) == set(languages) - {"it"}
         paths = [
             base_path.with_name(f"{base_path.stem}-{language}{base_path.suffix}") for language in series_by_language
         ]
@@ -269,10 +286,14 @@ def test_seven_language_pipeline_returns_every_generated_chart(
     assert result.analysis_json is not None
     assert result.pdf is None
     assert result.charts == generated_paths
-    assert len(result.charts) == len(languages) == 7
+    assert len(result.charts) == 7
     assert all(path.exists() for path in result.charts)
     assert not (tmp_path / "output" / f"{report['run']['slug']}-trend.png").exists()
     assert report["artifacts"]["charts"] == [str(path) for path in result.charts]
+    assert set(report["languages"]) == set(languages)
+    assert report["languages"]["it"]["pageviews"] == []
+    assert report["comparison"]["comparable"] is False
+    assert any("it" in warning for warning in report["comparison"]["warnings"])
 
 
 def test_pdf_only_pipeline_hides_its_internal_chart_and_json_report(
@@ -302,6 +323,236 @@ def test_pdf_only_pipeline_hides_its_internal_chart_and_json_report(
     assert result.charts == []
     assert result.pdf is not None and result.pdf.exists()
     assert len(PdfReader(result.pdf).pages) == 1
+
+
+def test_partial_article_resolution_keeps_missing_language_and_renders_available_series(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unresolved requested edition stays in JSON while valid editions render."""
+    languages = ["pl", "cs", "uk"]
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "article", "value": "Astronomy", "source_language": "en"},
+            "languages": languages,
+        }
+    )
+    resolution = ArticleResolution(
+        requested_title="Astronomy",
+        source_language="en",
+        status=ResolutionStatus.PARTIAL,
+        articles=[_article("pl", "Astronomia"), _article("cs", "Astronomie")],
+        missing_languages=[
+            MissingLanguageEquivalent(
+                language="uk",
+                project="uk.wikipedia",
+                requested_title="Astronomy",
+                reason="no linked equivalent",
+            )
+        ],
+    )
+    monkeypatch.setattr(pipeline, "ArticleResolver", lambda: _Resolver(resolution))
+    monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", _Pageviews)
+    actual_renderer = pipeline.render_comparison_charts
+    received_languages: list[set[str]] = []
+
+    def render_available(
+        series_by_language: dict[str, list[MonthlyPageview]], title: str, base_path: Path
+    ) -> list[Path]:
+        received_languages.append(set(series_by_language))
+        return actual_renderer(series_by_language, title, base_path)
+
+    monkeypatch.setattr(pipeline, "render_comparison_charts", render_available)
+    result = pipeline.run_analysis(config, tmp_path / "output")
+
+    assert result.analysis_json is not None and result.analysis_json.exists()
+    assert len(result.charts) == 1 and result.charts[0].exists()
+    assert result.pdf is not None and result.pdf.exists()
+    report = json.loads(result.analysis_json.read_text(encoding="utf-8"))
+    assert set(report["languages"]) == set(languages)
+    assert report["languages"]["uk"]["pageviews"] == []
+    assert report["languages"]["uk"]["absolute_metrics"] is None
+    assert any("no linked equivalent" in warning for warning in report["languages"]["uk"]["warnings"])
+    assert report["comparison"]["comparable"] is False
+    assert any("uk" in warning for warning in report["comparison"]["warnings"])
+    assert received_languages == [{"pl", "cs"}]
+    assert len(PdfReader(result.pdf).pages) == 1
+
+
+def test_partial_topic_missing_sitelink_keeps_comparison_invalid_and_renders_available_series(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonical topic mappings without one sitelink remain structured and render safely."""
+    languages = ["pl", "cs", "uk"]
+    topic = "Astronomy"
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "topic", "value": topic, "source_language": "en"},
+            "languages": languages,
+        }
+    )
+    resolution = [
+        TopicResolution(
+            requested_topic=topic,
+            language="pl",
+            source_language="en",
+            status=ResolutionStatus.RESOLVED,
+            selected_articles=[_article("pl", "Astronomia")],
+            candidate_count=1,
+            selection_method=TopicSelectionMethod.WIKIDATA_SITELINK,
+            canonical_concept_ids=["Q333"],
+        ),
+        TopicResolution(
+            requested_topic=topic,
+            language="cs",
+            source_language="en",
+            status=ResolutionStatus.RESOLVED,
+            selected_articles=[_article("cs", "Astronomie")],
+            candidate_count=1,
+            selection_method=TopicSelectionMethod.WIKIDATA_SITELINK,
+            canonical_concept_ids=["Q333"],
+        ),
+        TopicResolution(
+            requested_topic=topic,
+            language="uk",
+            source_language="en",
+            status=ResolutionStatus.REQUIRES_CLARIFICATION,
+            clarification=ResolutionClarification(language="uk", title=topic, reason="missing_canonical_sitelink"),
+            candidate_count=0,
+            selection_method=TopicSelectionMethod.WIKIDATA_SITELINK,
+            canonical_concept_ids=["Q333"],
+        ),
+    ]
+    pageviews = _CountingTopicPageviews()
+    monkeypatch.setattr(pipeline, "ArticleResolver", lambda: _Resolver(resolution))
+    monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", lambda: pageviews)
+    result = pipeline.run_analysis(config, tmp_path / "output")
+
+    assert result.analysis_json is not None and result.analysis_json.exists()
+    assert result.charts and all(path.exists() for path in result.charts)
+    assert result.pdf is not None and result.pdf.exists()
+    report = json.loads(result.analysis_json.read_text(encoding="utf-8"))
+    assert set(report["languages"]) == set(languages)
+    assert report["languages"]["uk"]["pageviews"] == []
+    assert any("missing_canonical_sitelink" in warning for warning in report["languages"]["uk"]["warnings"])
+    assert report["comparison"]["comparable"] is False
+    assert set(pageviews.article_requests) == {"Astronomia", "Astronomie"}
+
+
+def test_one_analyzable_language_in_multi_language_request_uses_trend_chart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One surviving edition produces a local chart without changing comparison validity."""
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "article", "value": "Astronomy", "source_language": "en"},
+            "languages": ["pl", "cs", "uk"],
+        }
+    )
+    resolution = ArticleResolution(
+        requested_title="Astronomy",
+        source_language="en",
+        status=ResolutionStatus.PARTIAL,
+        articles=[_article("pl", "Astronomia")],
+        missing_languages=[
+            MissingLanguageEquivalent(
+                language=language,
+                project=f"{language}.wikipedia",
+                requested_title="Astronomy",
+                reason="no linked equivalent",
+            )
+            for language in ("cs", "uk")
+        ],
+    )
+    monkeypatch.setattr(pipeline, "ArticleResolver", lambda: _Resolver(resolution))
+    monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", _Pageviews)
+    actual_renderer = pipeline.render_trend_chart
+    calls: list[int] = []
+
+    def render_one(series: list[MonthlyPageview], title: str, output_path: Path) -> Path:
+        calls.append(len(series))
+        return actual_renderer(series, title, output_path)
+
+    def comparison_renderer(*_: object, **__: object) -> list[Path]:
+        pytest.fail("comparison renderer must not receive a one-language mapping")
+
+    monkeypatch.setattr(pipeline, "render_trend_chart", render_one)
+    monkeypatch.setattr(pipeline, "render_comparison_charts", comparison_renderer)
+    result = pipeline.run_analysis(config, tmp_path / "output")
+
+    assert calls == [len(_series(date(2024, 9, 1), date(2026, 8, 31)))]
+    assert len(result.charts) == 1 and result.charts[0].exists()
+    assert result.pdf is not None and result.pdf.exists()
+    report = json.loads(result.analysis_json.read_text(encoding="utf-8"))
+    assert set(report["languages"]) == {"pl", "cs", "uk"}
+    assert report["comparison"]["comparable"] is False
+
+
+@pytest.mark.parametrize(
+    ("outputs", "has_json"),
+    [
+        ({"json": True, "charts": True, "pdf": True}, True),
+        ({"json": True, "charts": False, "pdf": False}, True),
+        ({"json": False, "charts": True, "pdf": True}, False),
+    ],
+)
+def test_zero_analyzable_series_skips_renderers_and_preserves_clarification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outputs: dict[str, bool],
+    has_json: bool,
+) -> None:
+    """Clarification-only runs complete without pageview or presentation calls."""
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "topic", "value": "Mercury", "source_language": "en"},
+            "languages": ["pl", "cs"],
+            "output": outputs,
+        }
+    )
+    resolution = [
+        TopicResolution(
+            requested_topic="Mercury",
+            language=language,
+            source_language="en",
+            status=ResolutionStatus.REQUIRES_CLARIFICATION,
+            clarification=ResolutionClarification(language=language, title="Mercury", reason="disambiguation_page"),
+            candidate_count=0,
+            selection_method=TopicSelectionMethod.MEDIAWIKI_SEMANTIC_EVIDENCE,
+        )
+        for language in config.languages
+    ]
+
+    class NoPageviews:
+        def __enter__(self) -> NoPageviews:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def get_article_pageviews_result(self, *_: object, **__: object) -> PageviewsFetchResult:
+            pytest.fail("clarification results must not request pageviews")
+
+    monkeypatch.setattr(pipeline, "ArticleResolver", lambda: _Resolver(resolution))
+    monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", NoPageviews)
+    monkeypatch.setattr(pipeline, "render_comparison_charts", lambda *_: pytest.fail("chart render called"))
+    monkeypatch.setattr(pipeline, "render_trend_chart", lambda *_: pytest.fail("trend render called"))
+    monkeypatch.setattr(pipeline, "write_pdf_report", lambda *_: pytest.fail("PDF render called"))
+
+    result = pipeline.run_analysis(config, tmp_path / "output")
+
+    assert (result.analysis_json is not None) is has_json
+    assert result.charts == []
+    assert result.pdf is None
+    if result.analysis_json is not None:
+        report = json.loads(result.analysis_json.read_text(encoding="utf-8"))
+        assert report["artifacts"]["charts"] == []
+        assert report["artifacts"]["pdf"] is None
+        assert report["resolution"]["topics"][0]["clarification"]["reason"] == "disambiguation_page"
+        if outputs["charts"] or outputs["pdf"]:
+            assert any("analyzable pageview series" in warning for warning in report["warnings"])
 
 
 def test_daily_pipeline_reports_exact_dates_baseline_thresholds_and_artifacts(

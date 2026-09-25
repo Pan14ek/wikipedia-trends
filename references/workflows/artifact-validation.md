@@ -22,22 +22,32 @@ Before returning any completed analysis with requested output artifacts.
 2. If `analysis_json` is a path, verify that exact file exists and parses,
    confirm supported `schema_version` `2.1.0`, and read findings, warnings,
    resolution, comparison, and artifact paths from it.
-3. For each requested chart in `charts[]`, verify that exact PNG path exists
+3. If the report explicitly says chart or PDF output was skipped because no
+   requested language produced an analyzable pageview series, and the matching
+   CLI path is `[]` or `null`, report that semantic limitation to the user.
+   Do not claim the artifact exists or rerun repeatedly to force its creation.
+4. For each requested chart in `charts[]`, verify that exact PNG path exists
    and is valid. Validate every path, including all per-language charts for
    comparisons with more than six languages.
-4. If `pdf` is a path, verify the reported PDF exists and is readable. A path
+5. If `pdf` is a path, verify the reported PDF exists and is readable. A path
    string alone does not prove successful output.
-5. If `analysis_json` is `null` (`output.json = false`), do not assume
+6. If `analysis_json` is `null` (`output.json = false`), do not assume
    `analysis.json` exists. Validate only other returned outputs and do not
    invent metrics unavailable from a validated machine-readable report. For
    detailed numeric interpretation, prefer JSON as an audit artifact unless
-   the user explicitly forbids it; do not silently override that choice.
-6. If a requested artifact is missing or invalid, report the failure and do
-   not claim that it was created successfully.
+   the user explicitly forbids it; do not silently override that choice. If
+   no analyzable series also prevented every requested presentation artifact,
+   explain that limitation and do not offer numeric interpretation without a
+   generated machine-readable report.
+7. If an enabled artifact is missing or invalid and the report does not
+   explain a semantic skip, report the generation failure plainly and do not
+   claim that it was created successfully.
 
 ## Stop Conditions
 
 - Stop artifact-success claims for any missing or unreadable requested output.
+- An explicit no-analyzable-series warning with empty chart/PDF paths is an
+  intentional artifact skip, not a file-generation crash.
 - Do not claim unrequested outputs exist without checking.
 
 ## Output Requirements

@@ -47,6 +47,10 @@ evaluable, quality checks passed, the requested period was fully available, or
 a direct comparison is valid. Inspect the report statuses after every
 successful run when JSON output is enabled.
 
+A successful run may intentionally return no chart or PDF when resolution
+leaves no analyzable series. Inspect `analysis.json` warnings before treating
+empty artifact paths as a runtime failure.
+
 ## Step 0 — Locate the Skill Root
 
 The skill root is the directory containing all four of:
