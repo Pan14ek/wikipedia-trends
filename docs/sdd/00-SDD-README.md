@@ -33,6 +33,13 @@ Build a self-contained Agent Skill that lets an AI agent analyze Wikipedia pagev
 - Missing data may be tolerated if comparison remains methodologically valid.
 - MVP is complete only when the three original product scenarios work end-to-end and the result is validated on at least one inexpensive tool-capable agent model.
 
+M19 extends the baseline with inclusive ISO date windows, daily or monthly
+granularity, user-defined numeric thresholds, explicit growth baselines, and
+follow-up state persisted through schema-v2 reports. Relative windows are
+resolved once and stored as exact dates. Personal agent-evaluation files are
+kept local and ignored by Git; each evaluator may maintain its own data under
+`evaluation/`.
+
 ## Planned project structure
 
 ```text
@@ -109,5 +116,6 @@ wikipedia-trends/
 16. M16 — Cache
 17. M17 — E2E scenarios
 18. M18 — Agent evaluation
+19. M19 — Flexible periods, criteria, and follow-up state
 
 Each spec should be implemented and accepted before moving to the next one.
