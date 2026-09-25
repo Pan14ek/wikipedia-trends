@@ -24,7 +24,7 @@ Build AnalysisConfig from input-schema.md
     ↓
 Write config JSON to a writable location
     ↓
-Run scripts/analyze.py with --config and --output-dir
+Run scripts/run.py with --config and --output-dir (installed Skill)
     ↓
 Check process exit code
     ├── 2: configuration/usage failure → fix only a mechanically known error
@@ -70,13 +70,24 @@ request.
 Run either from the skill root:
 
 ```bash
-python scripts/analyze.py --config <config-path> --output-dir <output-dir>
+python3 scripts/run.py --config <config-path> --output-dir <output-dir>
 ```
 
-or with an explicit skill-root path:
+or with an explicit skill-root path for low-level development use:
 
 ```bash
-python <skill-root>/scripts/analyze.py \
+python3 <skill-root>/scripts/run.py \
+  --config <config-path> \
+  --output-dir <output-dir>
+```
+
+Use `scripts/analyze.py` directly only for development in an already prepared
+project environment.
+
+For an installed Skill, use its read-only-safe bootstrap launcher instead:
+
+```bash
+python3 <skill-root>/scripts/run.py \
   --config <config-path> \
   --output-dir <output-dir>
 ```
@@ -103,17 +114,17 @@ only the user's requested changes, following
 
 ## Step 3 — Choose the Python Interpreter
 
-Use the Python environment already configured for the skill. Prefer the
-repository virtual environment when it exists; otherwise use an available
-Python 3.12+ interpreter with the skill dependencies installed. A common
-Unix-like repository path is `<skill-root>/.venv/bin/python`, but it is not the
-only supported interpreter. The command examples use `python` for brevity.
+The installed-Skill launcher requires Python 3.12 or newer. It creates or
+reuses a cached virtual environment under `WIKIPEDIA_TRENDS_RUNTIME_DIR`, or
+the platform user-cache directory by default. Dependencies are installed from
+`requirements-runtime.lock`; the Skill itself is not installed editable and
+the Skill root is never used for runtime writes. Local development may use the
+repository's configured virtual environment.
 
 ## Step 4 — Run the CLI
 
 Pass both `--config` and `--output-dir` on every analysis run, even though
-`--output-dir` has a default. This makes the current run's output root
-unambiguous.
+`--output-dir` has a default. Installed-Skill agents should use `scripts/run.py`.
 
 ```bash
 python <skill-root>/scripts/analyze.py \
@@ -179,11 +190,12 @@ previous run's path because its name looks similar.
 
 ## Step 9 — Respond to the User
 
-Summarize only Python-produced findings that are supported by the report and
-validated outputs. State material resolution, period, quality, criterion, or
-comparison limitations. Provide verified paths for requested artifacts. If
-clarification is required, ask the user instead of rerunning to force a
-different resolution.
+Before writing the interpretation, follow
+[`workflows/result-interpretation.md`](workflows/result-interpretation.md).
+Summarize only Python-produced findings supported by the report and validated
+outputs. State material resolution, period, quality, criterion, or comparison
+limitations. Provide verified paths for requested artifacts. If clarification
+is required, ask the user instead of rerunning to force a different resolution.
 
 ## CLI Arguments
 

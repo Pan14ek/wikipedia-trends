@@ -30,6 +30,7 @@ from wiki_trends.models import (
     ArticleResolution,
     ConfidenceInterval,
     CriterionEvaluation,
+    DescriptiveTrend,
     Granularity,
     MonthlyPageview,
     MultiLanguageComparison,
@@ -54,7 +55,7 @@ __all__ = [
     "write_analysis_report",
 ]
 
-ANALYSIS_REPORT_SCHEMA_VERSION: Final[Literal["2.1.0"]] = "2.1.0"
+ANALYSIS_REPORT_SCHEMA_VERSION: Final[Literal["2.2.0"]] = "2.2.0"
 _RUN_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _PAGE_WIDTH, _PAGE_HEIGHT = A4
@@ -145,6 +146,7 @@ class LanguageReport(BaseModel):
     absolute_metrics: AbsoluteMetrics | None = None
     yoy_metrics: YoYMetrics | None = None
     period_growth: PeriodGrowthMetrics | None = None
+    descriptive_trend: DescriptiveTrend | None = None
     normalized_interest: NormalizedInterest | None = None
     anomalies: AnomalyDetection | None = None
     confidence_interval: ConfidenceInterval | None = None
@@ -177,7 +179,7 @@ class AnalysisReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["2.1.0"] = ANALYSIS_REPORT_SCHEMA_VERSION
+    schema_version: Literal["2.2.0"] = ANALYSIS_REPORT_SCHEMA_VERSION
     run: ReportRun
     input: AnalysisConfig
     resolution: ReportResolution

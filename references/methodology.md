@@ -48,6 +48,22 @@ Unknown observations never become zero. A zero previous total is reported as
 `non_comparable_periods`. The diagnostic mean-based percentage is equal to the
 total-based percentage because the compared known-month positions are paired.
 
+## WT-M25 Descriptive window trend
+
+`descriptive_trend` reports the first and last requested buckets, their
+endpoint direction, an endpoint percentage when both are known and the first
+value is positive, known adjacent-change counts, the ending consecutive
+directional streak, and the earliest peak/trough in a tie. Endpoint change is
+calculated as `((last / first) - 1) * 100`; it describes only the requested
+window and is not YoY growth or `period_growth`.
+
+Adjacent comparisons require consecutive calendar buckets at the declared
+granularity. Unknown or missing buckets break adjacency and streaks. Boundary
+unknowns remain unknown; the implementation never substitutes another known
+bucket. A zero first boundary gives `zero_baseline` with no percentage. Agents
+must use these Python-produced fields for within-window statements and must
+not recalculate from `pageviews[]`.
+
 ## M04 Article resolution
 
 For `query.mode = article`, M04 first resolves the requested title in an

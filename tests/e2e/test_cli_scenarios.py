@@ -14,6 +14,7 @@ from wiki_trends import cli, pipeline
 from wiki_trends.article_resolver import ArticleResolver
 from wiki_trends.config import AnalysisConfig
 from wiki_trends.models import (
+    AnomalyDetection,
     ArticleResolution,
     Granularity,
     MissingLanguageEquivalent,
@@ -224,13 +225,139 @@ def test_mocked_pipeline_writes_json_png_and_one_page_pdf(
     report = json.loads(json_path.read_text(encoding="utf-8"))
     AnalysisReport.model_validate(report)
 
-    assert report["schema_version"] == "2.1.0"
+    assert report["schema_version"] == "2.2.0"
     assert set(report["languages"]) == set(languages)
     assert png_path.read_bytes().startswith(b"\x89PNG")
     assert len(PdfReader(pdf_path).pages) == 1
     assert report["artifacts"]["pdf"] == str(pdf_path)
     assert all(section["absolute_metrics"] is not None for section in report["languages"].values())
     assert all(source["retrieval"] == "network" for source in report["sources"])
+    if not topic_mode:
+        assert all(
+            next(item for item in section["quality"] if item["id"] == "article_resolution")["status"] == "pass"
+            for section in report["languages"].values()
+        )
+        if len(languages) > 1:
+            assert report["comparison"]["comparison_validity"]["status"] == "pass"
+            assert all(
+                next(item for item in section["quality"] if item["id"] == "comparison_validity")["status"] == "pass"
+                for section in report["languages"].values()
+            )
+        else:
+            comparison_quality = next(
+                item for item in report["languages"][languages[0]]["quality"] if item["id"] == "comparison_validity"
+            )
+            assert comparison_quality["status"] == "not_evaluated"
+
+
+def test_nintendo_switch_2_pipeline_regression_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify normative WT-M25 behavior through report serialization without network access."""
+    fixture = json.loads((Path(__file__).parents[1] / "fixtures" / "nintendo_switch_2_12_months.json").read_text())
+    observations = [
+        MonthlyPageview(month=date.fromisoformat(item["timestamp"][:8]), views=item["views"])
+        for item in fixture["items"]
+    ]
+
+    class NintendoPageviews(_Pageviews):
+        def get_article_pageviews_result(
+            self,
+            _: str,
+            __: str,
+            start: date,
+            end: date,
+            *,
+            granularity: Granularity = Granularity.MONTHLY,
+        ) -> PageviewsFetchResult:
+            return PageviewsFetchResult(
+                [item for item in observations if start <= item.month <= end],
+                "network",
+            )
+
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "article", "value": "Nintendo Switch 2", "source_language": "en"},
+            "languages": ["en"],
+            "period": {"start": "2025-09-01", "end": "2026-08-31", "granularity": "monthly"},
+            "criteria": {"normalized_interest": False, "confidence_intervals": False},
+            "output": {"json": True},
+        }
+    )
+    resolution = ArticleResolution(
+        requested_title="Nintendo Switch 2",
+        source_language="en",
+        status=ResolutionStatus.RESOLVED,
+        articles=[_article("en", "Nintendo Switch 2")],
+    )
+    monkeypatch.setattr(pipeline, "ArticleResolver", lambda: _Resolver(resolution))
+    monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", NintendoPageviews)
+
+    result = pipeline.run_analysis(config, tmp_path / "output")
+    assert result.analysis_json is not None
+    assert len(result.charts) == 1 and result.charts[0].is_file()
+    assert result.pdf is not None and result.pdf.is_file()
+    report = json.loads(result.analysis_json.read_text(encoding="utf-8"))
+    language = report["languages"]["en"]
+    quality = {item["id"]: item["status"] for item in language["quality"]}
+
+    assert report["schema_version"] == "2.2.0"
+    assert report["resolution"]["article"]["status"] == "resolved"
+    assert quality["article_resolution"] == "pass"
+    assert quality["completeness"] == "pass"
+    assert language["absolute_metrics"]["completeness_ratio"] == 1.0
+    assert language["yoy_metrics"]["status"] == "insufficient_data"
+    assert language["yoy_metrics"]["growth_pct"] is None
+    assert language["period_growth"] is None
+    assert language["descriptive_trend"]["direction"] == "lower_at_end"
+    assert language["descriptive_trend"]["endpoint_change_pct"] == pytest.approx(-32.12403870777493)
+    assert language["descriptive_trend"]["ending_streak"]["intervals"] == 2
+
+
+def test_pipeline_shares_one_anomaly_result_between_report_and_quality(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The detector runs once and its exact result is supplied to quality."""
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "article", "value": "Astronomy", "source_language": "en"},
+            "languages": ["en"],
+            "output": {"json": True, "charts": False, "pdf": False},
+        }
+    )
+    resolution = ArticleResolution(
+        requested_title="Astronomy",
+        source_language="en",
+        status=ResolutionStatus.RESOLVED,
+        articles=[_article("en", "Astronomy")],
+    )
+    expected = AnomalyDetection(observed_months=24, limitation="deterministic test result")
+    detector_calls = 0
+    quality_arguments: list[object] = []
+    original_evaluate = pipeline.evaluate_quality
+
+    def detect_once(_: list[MonthlyPageview]) -> AnomalyDetection:
+        nonlocal detector_calls
+        detector_calls += 1
+        return expected
+
+    def evaluate_with_capture(*args: object, **kwargs: object) -> object:
+        quality_arguments.append(kwargs["anomaly_detection"])
+        return original_evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "ArticleResolver", lambda: _Resolver(resolution))
+    monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", _Pageviews)
+    monkeypatch.setattr(pipeline, "detect_anomalies", detect_once)
+    monkeypatch.setattr(pipeline, "evaluate_quality", evaluate_with_capture)
+
+    result = pipeline.run_analysis(config, tmp_path / "output")
+    report = json.loads(result.analysis_json.read_text(encoding="utf-8"))
+
+    assert detector_calls == 1
+    assert quality_arguments == [expected]
+    assert report["languages"]["en"]["anomalies"]["limitation"] == "deterministic test result"
 
 
 def test_seven_language_pipeline_returns_every_generated_chart(
@@ -373,8 +500,18 @@ def test_partial_article_resolution_keeps_missing_language_and_renders_available
     assert report["languages"]["uk"]["pageviews"] == []
     assert report["languages"]["uk"]["absolute_metrics"] is None
     assert any("no linked equivalent" in warning for warning in report["languages"]["uk"]["warnings"])
+    for language in ("pl", "cs"):
+        resolution_quality = next(
+            item for item in report["languages"][language]["quality"] if item["id"] == "article_resolution"
+        )
+        assert resolution_quality["status"] == "pass"
     assert report["comparison"]["comparable"] is False
     assert any("uk" in warning for warning in report["comparison"]["warnings"])
+    assert report["comparison"]["comparison_validity"]["status"] != "not_evaluated"
+    for language in ("pl", "cs"):
+        assert next(
+            item for item in report["languages"][language]["quality"] if item["id"] == "comparison_validity"
+        )["status"] == report["comparison"]["comparison_validity"]["status"]
     assert received_languages == [{"pl", "cs"}]
     assert len(PdfReader(result.pdf).pages) == 1
 
@@ -596,7 +733,7 @@ def test_daily_pipeline_reports_exact_dates_baseline_thresholds_and_artifacts(
     assert json_path is not None and chart_path is not None and pdf_path is not None
     report = json.loads(json_path.read_text(encoding="utf-8"))
 
-    assert report["schema_version"] == "2.1.0"
+    assert report["schema_version"] == "2.2.0"
     assert report["requested_period"] == {
         "start": "2026-08-01",
         "end": "2026-08-07",
@@ -700,7 +837,7 @@ def test_topic_pipeline_uses_real_resolver_and_one_project_denominator(
 
     assert json_path is not None and chart_path is not None and pdf_path is not None
     report = json.loads(json_path.read_text(encoding="utf-8"))
-    assert report["schema_version"] == "2.1.0"
+    assert report["schema_version"] == "2.2.0"
     assert pageviews.article_requests == list(pages)
     assert pageviews.project_requests == ["en.wikipedia"]
     assert (

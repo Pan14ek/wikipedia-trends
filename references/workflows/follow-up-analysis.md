@@ -22,7 +22,9 @@ period or output, or adding a criterion.
 
 1. Copy the prior input state and change only explicitly requested fields.
 2. Preserve all unrelated settings and exact dates unless the user changes
-   them.
+   them. This includes the previous `output` configuration; do not reset
+   artifact preferences during a follow-up unless the user requests that
+   change.
 3. Load workflows for new requirements. For example, adding an edition also
    requires [`multi-language-comparison.md`](multi-language-comparison.md).
 4. Validate the updated config, rerun the CLI, and use only the new run's

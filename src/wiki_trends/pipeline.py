@@ -8,7 +8,12 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from wiki_trends.analytics import aggregate_topic_pageviews, compute_absolute_metrics, compute_yoy_metrics
+from wiki_trends.analytics import (
+    aggregate_topic_pageviews,
+    compute_absolute_metrics,
+    compute_descriptive_trend,
+    compute_yoy_metrics,
+)
 from wiki_trends.anomalies import detect_anomalies
 from wiki_trends.article_resolver import ArticleResolver
 from wiki_trends.charts import render_comparison_charts, render_trend_chart
@@ -29,6 +34,7 @@ from wiki_trends.models import (
     ObservationStatus,
     PeriodGrowthMetrics,
     PeriodGrowthStatus,
+    ResolutionStatus,
     TopicResolution,
 )
 from wiki_trends.normalization import compute_normalized_interest
@@ -173,35 +179,6 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> AnalysisRunResult
         if config.criteria.growth or any(item.metric is CriterionMetric.GROWTH_PCT for item in config.thresholds)
         else {}
     )
-    reports: dict[str, LanguageReport] = {}
-    for language, series in language_series.items():
-        absolute = compute_absolute_metrics(series) if series else None
-        yoy = (
-            compute_yoy_metrics(series)
-            if series and granularity is Granularity.MONTHLY and config.criteria.growth
-            else None
-        )
-        normalized = normalized_by_language.get(language)
-        reports[language] = LanguageReport(
-            pageviews=series,
-            absolute_metrics=absolute,
-            yoy_metrics=yoy,
-            period_growth=period_growth.get(language),
-            normalized_interest=normalized,
-            anomalies=detect_anomalies(series) if series and config.criteria.anomalies else None,
-            confidence_interval=(
-                compute_yoy_confidence_interval(series)
-                if series and granularity is Granularity.MONTHLY and config.criteria.confidence_intervals
-                else None
-            ),
-            quality=evaluate_quality(series, yoy_metrics=yoy).checks if series else [],
-            criterion_evaluations=_evaluate_thresholds(config, absolute, normalized, period_growth.get(language)),
-            warnings=(
-                _topic_language_warnings(topic_resolution_by_language.get(language), bool(series))
-                if topic_mode
-                else _article_language_warnings(article_resolution, language, bool(series))
-            ),
-        )
     comparison = (
         compare_languages(
             [
@@ -223,9 +200,57 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> AnalysisRunResult
         if len(config.languages) > 1
         else None
     )
+    reports: dict[str, LanguageReport] = {}
+    for language, series in language_series.items():
+        absolute = compute_absolute_metrics(series) if series else None
+        yoy = (
+            compute_yoy_metrics(series)
+            if series and granularity is Granularity.MONTHLY and config.criteria.growth
+            else None
+        )
+        normalized = normalized_by_language.get(language)
+        anomaly_detection = detect_anomalies(series) if series else None
+        descriptive_trend = compute_descriptive_trend(series) if series else None
+        language_resolution = (
+            _resolved_article_for_language(article_resolution, language)
+            if not topic_mode and article_resolution is not None and series
+            else None
+        )
+        reports[language] = LanguageReport(
+            pageviews=series,
+            absolute_metrics=absolute,
+            yoy_metrics=yoy,
+            period_growth=period_growth.get(language),
+            descriptive_trend=descriptive_trend,
+            normalized_interest=normalized,
+            anomalies=anomaly_detection if config.criteria.anomalies else None,
+            confidence_interval=(
+                compute_yoy_confidence_interval(series)
+                if series and granularity is Granularity.MONTHLY and config.criteria.confidence_intervals
+                else None
+            ),
+            quality=(
+                evaluate_quality(
+                    series,
+                    article_resolution=language_resolution,
+                    yoy_metrics=yoy,
+                    anomaly_detection=anomaly_detection,
+                    comparison_validity=comparison.comparison_validity if comparison else None,
+                    descriptive_trend=descriptive_trend,
+                ).checks
+                if series
+                else []
+            ),
+            criterion_evaluations=_evaluate_thresholds(config, absolute, normalized, period_growth.get(language)),
+            warnings=(
+                _topic_language_warnings(topic_resolution_by_language.get(language), bool(series))
+                if topic_mode
+                else _article_language_warnings(article_resolution, language, bool(series))
+            ),
+        )
     slug = create_run_slug(period, config)
     report = AnalysisReport(
-        run=ReportRun(slug=slug, generated_at=datetime.now(UTC), methodology_version="2.1"),
+        run=ReportRun(slug=slug, generated_at=datetime.now(UTC), methodology_version="2.2"),
         input=normalized_config,
         resolution=resolution,
         sources=sources,
@@ -275,6 +300,22 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> AnalysisRunResult
         },
     )
     return AnalysisRunResult(analysis_json=json_path, charts=chart_paths, pdf=pdf_path)
+
+
+def _resolved_article_for_language(
+    resolution: ArticleResolution,
+    language: str,
+) -> ArticleResolution | None:
+    """Scope a global article-resolution result to one successfully mapped edition."""
+    articles = [article for article in resolution.articles if article.language == language]
+    if not articles:
+        return None
+    return ArticleResolution(
+        requested_title=resolution.requested_title,
+        source_language=resolution.source_language,
+        status=ResolutionStatus.RESOLVED,
+        articles=articles,
+    )
 
 
 def _available_window(start: date, end: date, granularity: Granularity) -> tuple[date, date]:

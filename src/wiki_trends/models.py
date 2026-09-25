@@ -21,6 +21,10 @@ __all__ = [
     "ConfidenceInterval",
     "ConfidenceIntervalStatus",
     "ComparisonPeriod",
+    "DescriptiveTrend",
+    "DescriptiveTrendStatus",
+    "EndpointChangeStatus",
+    "EndingTrendStreak",
     "CriterionEvaluation",
     "CriterionEvaluationStatus",
     "CriterionMetric",
@@ -51,6 +55,9 @@ __all__ = [
     "TopicSelectionMethod",
     "YoYMetrics",
     "YoYStatus",
+    "TrendPoint",
+    "TrendStreakDirection",
+    "WindowDirection",
 ]
 
 
@@ -245,6 +252,117 @@ class MonthlyPageview(BaseModel):
     def timestamp(self) -> date:
         """Return the calendar date represented by this observation."""
         return self.month
+
+
+class DescriptiveTrendStatus(StrEnum):
+    """Whether a series contains any known values for descriptive reporting."""
+
+    AVAILABLE = "available"
+    INSUFFICIENT_DATA = "insufficient_data"
+
+
+class WindowDirection(StrEnum):
+    """Direction between the requested window's boundary observations."""
+
+    HIGHER_AT_END = "higher_at_end"
+    LOWER_AT_END = "lower_at_end"
+    UNCHANGED = "unchanged"
+    UNKNOWN = "unknown"
+
+
+class EndpointChangeStatus(StrEnum):
+    """Availability of the descriptive first-to-last percentage change."""
+
+    AVAILABLE = "available"
+    ZERO_BASELINE = "zero_baseline"
+    INSUFFICIENT_DATA = "insufficient_data"
+
+
+class TrendStreakDirection(StrEnum):
+    """Direction of the uninterrupted run ending at the final requested bucket."""
+
+    INCREASE = "increase"
+    DECREASE = "decrease"
+    UNCHANGED = "unchanged"
+    NONE = "none"
+
+
+class TrendPoint(BaseModel):
+    """One pageview value selected as a descriptive boundary or extreme."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    timestamp: date
+    views: int | None = Field(default=None, ge=0)
+
+
+class EndingTrendStreak(BaseModel):
+    """A contiguous run of equal-direction changes ending at the final bucket."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    direction: TrendStreakDirection
+    intervals: int = Field(ge=0)
+    start: date | None = None
+    end: date | None = None
+
+    @model_validator(mode="after")
+    def validate_streak_bounds(self) -> EndingTrendStreak:
+        """Require bounds exactly when at least one interval is present."""
+        if self.intervals == 0:
+            if self.direction is not TrendStreakDirection.NONE or self.start is not None or self.end is not None:
+                raise ValueError("an empty ending streak must use direction none and omit bounds")
+        elif self.direction is TrendStreakDirection.NONE or self.start is None or self.end is None:
+            raise ValueError("a non-empty ending streak requires a direction and both bounds")
+        elif self.start > self.end:
+            raise ValueError("ending streak start must not follow end")
+        return self
+
+
+class DescriptiveTrend(BaseModel):
+    """Deterministic descriptive evidence for one requested pageview window."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: DescriptiveTrendStatus
+    first: TrendPoint | None = None
+    last: TrendPoint | None = None
+    direction: WindowDirection
+    endpoint_change_status: EndpointChangeStatus
+    endpoint_change_pct: float | None = None
+    comparable_adjacent_pairs: int = Field(ge=0)
+    positive_adjacent_changes: int = Field(ge=0)
+    negative_adjacent_changes: int = Field(ge=0)
+    unchanged_adjacent_changes: int = Field(ge=0)
+    ending_streak: EndingTrendStreak
+    peak: TrendPoint | None = None
+    trough: TrendPoint | None = None
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_trend_state(self) -> DescriptiveTrend:
+        """Keep summary status, boundaries, and available percentage coherent."""
+        if self.comparable_adjacent_pairs != (
+            self.positive_adjacent_changes + self.negative_adjacent_changes + self.unchanged_adjacent_changes
+        ):
+            raise ValueError("comparable adjacent pairs must equal the sum of directional changes")
+        if self.endpoint_change_status is EndpointChangeStatus.AVAILABLE:
+            if (
+                self.endpoint_change_pct is None
+                or self.first is None
+                or self.last is None
+                or self.first.views is None
+                or self.last.views is None
+            ):
+                raise ValueError("available endpoint change requires known boundaries and a percentage")
+        elif self.endpoint_change_pct is not None:
+            raise ValueError("unavailable endpoint change must not include a percentage")
+        if self.status is DescriptiveTrendStatus.INSUFFICIENT_DATA:
+            if any(point is not None for point in (self.first, self.last, self.peak, self.trough)):
+                raise ValueError("insufficient descriptive trend must not contain known points")
+        elif self.first is None or self.last is None:
+            raise ValueError("available descriptive trend requires both requested boundary buckets")
+        return self
 
 
 PageviewObservation = MonthlyPageview

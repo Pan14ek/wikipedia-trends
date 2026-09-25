@@ -80,7 +80,10 @@ analysis window. Thresholds support `growth_pct`, `normalized_interest_mean`,
 and `completeness_ratio`, with `gt`, `gte`, `lt`, or `lte` operators.
 
 The `period`, `criteria`, and `output` objects can be omitted; their defaults
-are shown above.
+apply automatically. Do not write default-valued sections without a reason. In
+particular, if the user gives no JSON/chart/PDF preference, omit `output` so
+`OutputConfig` defaults apply. A follow-up must preserve the prior report's
+frozen output configuration unless the user explicitly changes it.
 
 Legacy month counts resolve to the latest N complete calendar months. Daily
 requests are capped at yesterday if the final requested day is not yet
@@ -88,5 +91,5 @@ complete, and the output records requested and available dates separately. A
 valid configuration can be checked with:
 
 ```bash
-python scripts/analyze.py --config examples/astronomy-uk.json
+python3 scripts/run.py --config examples/astronomy-uk.json --output-dir output
 ```

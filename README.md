@@ -167,6 +167,11 @@ npx skills add Pan14ek/wikipedia-trends
 The skill is centered around `SKILL.md`, with additional workflow and methodology references under `references/`.
 
 Once installed, ask your agent a Wikipedia trend question in natural language.
+The installed Skill runs through `scripts/run.py`, which requires Python 3.12+
+and creates or reuses its dependency runtime in the user cache (or the
+`WIKIPEDIA_TRENDS_RUNTIME_DIR` you set). The launcher does not write to the
+installed Skill directory and reads pinned runtime dependencies from
+`requirements-runtime.lock`.
 
 For example:
 
@@ -409,6 +414,13 @@ YoY % = ((recent period / previous period) - 1) × 100
 
 Insufficient or structurally non-comparable data produces an explicit unavailable status rather than a fabricated percentage.
 
+### Descriptive window trend
+
+The report includes Python-generated within-window endpoint direction and
+change, adjacent-change counts, the ending consecutive streak, and peak/trough
+observations. Endpoint change is not YoY growth. Agents use those report fields
+directly and do not derive trend numbers from raw pageviews.
+
 ### Normalized interest
 
 Absolute pageviews are difficult to compare directly across Wikipedia editions because the projects have different total traffic.
@@ -647,7 +659,7 @@ Each output type is independently configurable.
 The machine-readable report currently uses:
 
 ```text
-schema_version: 2.1.0
+schema_version: 2.2.0
 ```
 
 A report contains information such as:
@@ -695,12 +707,23 @@ The PDF is intentionally bounded. Detailed machine-readable results and warnings
 
 ## CLI
 
-The CLI is the supported execution path for an analysis.
+The installed-Skill entry point is `scripts/run.py`; `scripts/analyze.py`
+remains the lower-level development entry point.
 
 ```bash
-python scripts/analyze.py \
+python3 scripts/run.py \
   --config <config.json> \
   --output-dir <output-dir>
+```
+
+The launcher caches a venv outside the Skill root, installs the reproducible
+runtime export, and directs Matplotlib caches to a writable user-cache path.
+The runtime lock is generated from the checked-in `uv.lock` with:
+
+```bash
+UV_CACHE_DIR=/tmp/wikipedia-trends-uv-cache uv export --locked --package wikipedia-trends \
+  --no-dev --no-emit-project --format requirements.txt --no-annotate --no-header \
+  -o requirements-runtime.lock
 ```
 
 ### Arguments
@@ -796,6 +819,10 @@ period
 criteria
 output
 ```
+
+When the user has not specified JSON, chart, or PDF preferences, omit the
+`output` object and let those defaults apply. Follow-up analyses retain the
+previous report's frozen output settings unless the user requests a change.
 
 The default analysis period is the latest **24 complete calendar months**.
 

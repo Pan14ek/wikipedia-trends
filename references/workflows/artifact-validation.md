@@ -20,7 +20,7 @@ Before returning any completed analysis with requested output artifacts.
    `analysis_json` and `pdf` are strings or JSON `null`; `charts` is an array.
    Never read the old singular `chart` field or convert `null` into a path.
 2. If `analysis_json` is a path, verify that exact file exists and parses,
-   confirm supported `schema_version` `2.1.0`, and read findings, warnings,
+   confirm supported `schema_version` `2.2.0`, and read findings, warnings,
    resolution, comparison, and artifact paths from it.
 3. If the report explicitly says chart or PDF output was skipped because no
    requested language produced an analyzable pageview series, and the matching

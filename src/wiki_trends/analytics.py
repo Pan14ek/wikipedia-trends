@@ -3,22 +3,197 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, timedelta
 from statistics import median
 
 from wiki_trends.models import (
     AbsoluteMetrics,
     AbsoluteMetricsStatus,
+    DescriptiveTrend,
+    DescriptiveTrendStatus,
+    EndingTrendStreak,
+    EndpointChangeStatus,
     Granularity,
     MonthlyPageview,
     ObservationStatus,
+    TrendPoint,
+    TrendStreakDirection,
+    WindowDirection,
     YoYMetrics,
     YoYStatus,
 )
 
-__all__ = ["aggregate_topic_pageviews", "compute_absolute_metrics", "compute_yoy_metrics"]
+__all__ = [
+    "aggregate_topic_pageviews",
+    "compute_absolute_metrics",
+    "compute_descriptive_trend",
+    "compute_yoy_metrics",
+]
 
 _YOY_WINDOW_MONTHS = 12
+_DESCRIPTIVE_TREND_NOTE = "Descriptive window trend only; this is not a YoY growth metric."
+
+
+def compute_descriptive_trend(monthly_pageviews: Sequence[MonthlyPageview]) -> DescriptiveTrend:
+    """Summarize deterministic within-window trend evidence without imputing data.
+
+    Adjacency requires consecutive calendar buckets at the declared granularity.
+    Unknown values and missing calendar buckets break both comparisons and
+    ending streaks. Equal extrema select the earliest timestamp.
+
+    Args:
+        monthly_pageviews: Requested observations in any order, with at most
+            one observation per calendar bucket.
+
+    Returns:
+        A typed summary whose endpoint change is explicitly distinct from YoY.
+
+    Raises:
+        ValueError: If duplicate timestamps or mixed granularities are supplied.
+    """
+    observations = sorted(monthly_pageviews, key=lambda observation: observation.timestamp)
+    timestamps = [observation.timestamp for observation in observations]
+    if len(timestamps) != len(set(timestamps)):
+        raise ValueError("descriptive trend requires unique pageview timestamps")
+    granularities = {observation.granularity for observation in observations}
+    if len(granularities) > 1:
+        raise ValueError("descriptive trend observations must use one granularity")
+    if not observations:
+        return DescriptiveTrend(
+            status=DescriptiveTrendStatus.INSUFFICIENT_DATA,
+            direction=WindowDirection.UNKNOWN,
+            endpoint_change_status=EndpointChangeStatus.INSUFFICIENT_DATA,
+            comparable_adjacent_pairs=0,
+            positive_adjacent_changes=0,
+            negative_adjacent_changes=0,
+            unchanged_adjacent_changes=0,
+            ending_streak=EndingTrendStreak(direction=TrendStreakDirection.NONE, intervals=0),
+            notes=[_DESCRIPTIVE_TREND_NOTE],
+        )
+
+    known = [observation for observation in observations if _is_known_observation(observation)]
+    first_observation, last_observation = observations[0], observations[-1]
+    first = TrendPoint(timestamp=first_observation.timestamp, views=first_observation.views)
+    last = TrendPoint(timestamp=last_observation.timestamp, views=last_observation.views)
+    if (
+        first_observation.views is None
+        or last_observation.views is None
+        or not _is_known_observation(first_observation)
+        or not _is_known_observation(last_observation)
+    ):
+        direction = WindowDirection.UNKNOWN
+        endpoint_status = EndpointChangeStatus.INSUFFICIENT_DATA
+        endpoint_change_pct = None
+    else:
+        direction = _window_direction(first_observation.views, last_observation.views)
+        if first_observation.views == 0:
+            endpoint_status = EndpointChangeStatus.ZERO_BASELINE
+            endpoint_change_pct = None
+        else:
+            endpoint_status = EndpointChangeStatus.AVAILABLE
+            endpoint_change_pct = ((last_observation.views / first_observation.views) - 1) * 100
+
+    adjacent_changes = [
+        (previous, current, current.views - previous.views)
+        for previous, current in zip(observations, observations[1:], strict=False)
+        if _are_adjacent(previous, current)
+        and _is_known_observation(previous)
+        and _is_known_observation(current)
+        and previous.views is not None
+        and current.views is not None
+    ]
+    positive = sum(change > 0 for _, _, change in adjacent_changes)
+    negative = sum(change < 0 for _, _, change in adjacent_changes)
+    unchanged = len(adjacent_changes) - positive - negative
+    ending_streak = _ending_streak(observations, adjacent_changes)
+    peak_observation = (
+        min(known, key=lambda observation: (-int(observation.views or 0), observation.timestamp)) if known else None
+    )
+    trough_observation = (
+        min(known, key=lambda observation: (int(observation.views or 0), observation.timestamp)) if known else None
+    )
+
+    return DescriptiveTrend(
+        status=DescriptiveTrendStatus.AVAILABLE,
+        first=first,
+        last=last,
+        direction=direction,
+        endpoint_change_status=endpoint_status,
+        endpoint_change_pct=endpoint_change_pct,
+        comparable_adjacent_pairs=len(adjacent_changes),
+        positive_adjacent_changes=positive,
+        negative_adjacent_changes=negative,
+        unchanged_adjacent_changes=unchanged,
+        ending_streak=ending_streak,
+        peak=(
+            TrendPoint(timestamp=peak_observation.timestamp, views=peak_observation.views) if peak_observation else None
+        ),
+        trough=(
+            TrendPoint(timestamp=trough_observation.timestamp, views=trough_observation.views)
+            if trough_observation
+            else None
+        ),
+        notes=[_DESCRIPTIVE_TREND_NOTE],
+    )
+
+
+def _is_known_observation(observation: MonthlyPageview) -> bool:
+    """Return whether an observation contains a real or explicit zero value."""
+    return observation.status is not ObservationStatus.UNKNOWN and observation.views is not None
+
+
+def _window_direction(first: int, last: int) -> WindowDirection:
+    """Classify the relationship between known requested boundaries."""
+    if last > first:
+        return WindowDirection.HIGHER_AT_END
+    if last < first:
+        return WindowDirection.LOWER_AT_END
+    return WindowDirection.UNCHANGED
+
+
+def _are_adjacent(previous: MonthlyPageview, current: MonthlyPageview) -> bool:
+    """Return whether two observations occupy consecutive calendar buckets."""
+    if previous.granularity is Granularity.DAILY and current.granularity is Granularity.DAILY:
+        return current.timestamp - previous.timestamp == timedelta(days=1)
+    return (
+        current.timestamp.year * 12 + current.timestamp.month
+        == previous.timestamp.year * 12 + previous.timestamp.month + 1
+    )
+
+
+def _ending_streak(
+    observations: Sequence[MonthlyPageview],
+    adjacent_changes: Sequence[tuple[MonthlyPageview, MonthlyPageview, int]],
+) -> EndingTrendStreak:
+    """Return the same-direction known comparisons ending at the last bucket."""
+    if len(observations) < 2:
+        return EndingTrendStreak(direction=TrendStreakDirection.NONE, intervals=0)
+    by_edge = {(previous.timestamp, current.timestamp): change for previous, current, change in adjacent_changes}
+    final_change = by_edge.get((observations[-2].timestamp, observations[-1].timestamp))
+    if final_change is None:
+        return EndingTrendStreak(direction=TrendStreakDirection.NONE, intervals=0)
+    direction = (
+        TrendStreakDirection.INCREASE
+        if final_change > 0
+        else TrendStreakDirection.DECREASE
+        if final_change < 0
+        else TrendStreakDirection.UNCHANGED
+    )
+    expected_sign = (final_change > 0) - (final_change < 0)
+    intervals = 1
+    start_index = len(observations) - 2
+    for index in range(len(observations) - 3, -1, -1):
+        change = by_edge.get((observations[index].timestamp, observations[index + 1].timestamp))
+        if change is None or (change > 0) - (change < 0) != expected_sign:
+            break
+        intervals += 1
+        start_index = index
+    return EndingTrendStreak(
+        direction=direction,
+        intervals=intervals,
+        start=observations[start_index].timestamp,
+        end=observations[-1].timestamp,
+    )
 
 
 def aggregate_topic_pageviews(article_series: Sequence[Sequence[MonthlyPageview]]) -> list[MonthlyPageview]:

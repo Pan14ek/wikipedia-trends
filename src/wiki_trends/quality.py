@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import timedelta
 from math import isfinite
 
-from wiki_trends.analytics import compute_yoy_metrics
+from wiki_trends.analytics import compute_descriptive_trend, compute_yoy_metrics
 from wiki_trends.anomalies import detect_anomalies
 from wiki_trends.models import (
     AnomalyDetection,
     AnomalyRecord,
     ArticleResolution,
+    DescriptiveTrend,
     Granularity,
     MonthlyPageview,
     ObservationStatus,
@@ -40,6 +40,7 @@ def evaluate_quality(
     anomaly_detection: AnomalyDetection | None = None,
     spike_sensitivity_threshold_pct: float = 10.0,
     comparison_validity: QualityCheck | None = None,
+    descriptive_trend: DescriptiveTrend | None = None,
 ) -> QualityReport:
     """Evaluate the six M08 quality checks without changing supplied analysis data.
 
@@ -56,6 +57,8 @@ def evaluate_quality(
             percentage points that is material. Defaults to 10.
         comparison_validity: M13's shared-comparison quality finding, when a
             multi-language comparison has been performed.
+        descriptive_trend: Shared deterministic adjacency summary, when the
+            pipeline has already calculated it.
 
     Returns:
         A report containing each check exactly once. A ``fail`` is local to
@@ -68,13 +71,14 @@ def evaluate_quality(
     _validate_unique_months(monthly_pageviews)
     _validate_spike_sensitivity_threshold(spike_sensitivity_threshold_pct)
     _validate_comparison_validity(comparison_validity)
-    detection = anomaly_detection or detect_anomalies(monthly_pageviews)
+    detection = anomaly_detection if anomaly_detection is not None else detect_anomalies(monthly_pageviews)
+    trend = descriptive_trend if descriptive_trend is not None else compute_descriptive_trend(monthly_pageviews)
     return QualityReport(
         checks=[
             _evaluate_completeness(monthly_pageviews),
             _evaluate_period_sufficiency(monthly_pageviews, yoy_metrics),
             _evaluate_article_resolution(article_resolution),
-            _evaluate_trend_consistency(monthly_pageviews),
+            _evaluate_trend_consistency(trend),
             _evaluate_spike_sensitivity(
                 monthly_pageviews,
                 yoy_metrics or compute_yoy_metrics(monthly_pageviews),
@@ -225,28 +229,24 @@ def _evaluate_article_resolution(article_resolution: ArticleResolution | None) -
     )
 
 
-def _evaluate_trend_consistency(monthly_pageviews: Sequence[MonthlyPageview]) -> QualityCheck:
-    """Calculate positive month-over-month changes without treating volatility as failure."""
-    sorted_observations = sorted(monthly_pageviews, key=lambda observation: observation.month)
-    known_pairs: list[tuple[int, int]] = []
-    for previous, current in zip(sorted_observations, sorted_observations[1:], strict=False):
-        if not _are_adjacent(previous, current):
-            continue
-        if previous.status is ObservationStatus.UNKNOWN or current.status is ObservationStatus.UNKNOWN:
-            continue
-        if previous.views is None or current.views is None:
-            continue
-        known_pairs.append((previous.views, current.views))
-    comparable_pairs = len(known_pairs)
+def _evaluate_trend_consistency(descriptive_trend: DescriptiveTrend) -> QualityCheck:
+    """Report the canonical descriptive-trend adjacency counts as diagnostics."""
+    comparable_pairs = descriptive_trend.comparable_adjacent_pairs
     if comparable_pairs == 0:
         return QualityCheck(
             id=QualityCheckId.TREND_CONSISTENCY,
             status=QualityStatus.NOT_EVALUATED,
             message="Trend consistency could not be evaluated because there are no comparable adjacent observed months.",
-            details={"comparable_adjacent_month_pairs": 0, "positive_change_ratio": None},
+            details={
+                "comparable_adjacent_month_pairs": 0,
+                "positive_adjacent_changes": 0,
+                "negative_adjacent_changes": 0,
+                "unchanged_adjacent_changes": 0,
+                "positive_change_ratio": None,
+            },
         )
 
-    positive_changes = sum(current_views > previous_views for previous_views, current_views in known_pairs)
+    positive_changes = descriptive_trend.positive_adjacent_changes
     positive_change_ratio = positive_changes / comparable_pairs
     return QualityCheck(
         id=QualityCheckId.TREND_CONSISTENCY,
@@ -258,6 +258,8 @@ def _evaluate_trend_consistency(monthly_pageviews: Sequence[MonthlyPageview]) ->
         details={
             "comparable_adjacent_month_pairs": comparable_pairs,
             "positive_month_over_month_changes": positive_changes,
+            "negative_adjacent_changes": descriptive_trend.negative_adjacent_changes,
+            "unchanged_adjacent_changes": descriptive_trend.unchanged_adjacent_changes,
             "positive_change_ratio": positive_change_ratio,
         },
     )
@@ -398,10 +400,3 @@ def _validate_unique_months(monthly_pageviews: Sequence[MonthlyPageview]) -> Non
     months = [observation.month for observation in monthly_pageviews]
     if len(months) != len(set(months)):
         raise ValueError("quality checks require at most one observation per calendar month")
-
-
-def _are_adjacent(previous: MonthlyPageview, current: MonthlyPageview) -> bool:
-    """Return whether two observations are adjacent at their declared resolution."""
-    if previous.granularity is Granularity.DAILY and current.granularity is Granularity.DAILY:
-        return current.month - previous.month == timedelta(days=1)
-    return current.month.year * 12 + current.month.month == previous.month.year * 12 + previous.month.month + 1

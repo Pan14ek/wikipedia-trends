@@ -1,14 +1,14 @@
 # Output schema
 
-WT-M20 updates the versioned machine-readable report contract. Every JSON report
-has `schema_version: "2.1.0"` and validates against
+WT-M25 updates the versioned machine-readable report contract. Every JSON report
+has `schema_version: "2.2.0"` and validates against
 `wiki_trends.report.AnalysisReport` before it is written.
 
 ## Top-level contract
 
 ```json
 {
-  "schema_version": "2.1.0",
+  "schema_version": "2.2.0",
   "run": {},
   "input": {},
   "resolution": {},
@@ -40,7 +40,11 @@ override is QID-equivalent for direct comparison, and typed candidate evidence
 with acceptance or rejection reasons and metadata fallback languages.
 `languages` is keyed by the requested language codes and
 contains the pageview series, available metrics, quality checks, anomalies,
-confidence interval, and limitations for each edition. `comparison` contains
+confidence interval, descriptive trend, and limitations for each edition. The
+additive `descriptive_trend` object contains deterministic requested-boundary
+direction and endpoint change, adjacent-change counts, the ending streak, and
+earliest-tie peak/trough observations. Its endpoint change describes only the
+requested window and is not YoY. `comparison` contains
 the M13 output when a multi-language comparison was performed; otherwise it is
 `null` rather than a synthetic comparison.
 

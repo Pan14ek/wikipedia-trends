@@ -37,7 +37,14 @@ evidence component and state what it can support.
 
 - Run every analysis through the project CLI; direct Wikimedia API calls are
   not an alternate analysis path.
-- Never calculate or estimate metrics manually. Use Python-generated results.
+- Every analytical number in a user-facing answer must already exist in the
+  current Python-generated report. Never derive percentages, averages, ratios,
+  rankings, streak lengths, or other metrics from raw observations. Rounding a
+  report value for presentation is allowed.
+- Use `descriptive_trend` only for within-window direction and endpoint
+  changes. Those changes are not YoY growth. Do not claim unavailable growth.
+- Describe reliability through explicit quality, completeness, warning, and
+  metric statuses; do not invent a composite reliability score or adjective.
 - Never invent canonical article titles or silently choose between materially
   different concepts.
 - In topic mode, Python's resolver is the semantic authority. Never promote a
@@ -56,6 +63,9 @@ evidence component and state what it can support.
 - Do not invent a threshold or explicit comparison baseline. Standard monthly
   YoY analysis does not require `comparison_period`; an explicit `growth_pct`
   threshold does.
+- If the user does not specify artifact preferences, omit the config `output`
+  section so `AnalysisConfig` defaults apply. Follow-up analyses preserve the
+  prior report's output configuration unless the user changes it.
 - For follow-ups, change only explicitly requested fields and preserve the
   previous report's frozen dates unless the user changes the period.
 - Validate requested/generated artifacts before claiming they exist.
@@ -93,6 +103,7 @@ references.
 | Modify a previous analysis while preserving unchanged parameters | [`follow-up-analysis.md`](references/workflows/follow-up-analysis.md) |
 | Handle a missing direct equivalent or user-approved proxy | [`proxy-resolution.md`](references/workflows/proxy-resolution.md) |
 | Validate JSON, charts, and PDF before returning results | [`artifact-validation.md`](references/workflows/artifact-validation.md) |
+| Interpret growth, trends, quality, or comparisons | [`result-interpretation.md`](references/workflows/result-interpretation.md) |
 
 ## Run the Analysis
 
@@ -102,13 +113,16 @@ artifact-validation lifecycle. Build a config that matches the input contract
 and run:
 
 ```bash
-python <skill-root>/scripts/analyze.py \
+python3 <skill-root>/scripts/run.py \
   --config <config.json> \
   --output-dir <output-dir>
 ```
 
-Do not call Wikimedia APIs directly or calculate results manually. Before
-returning a completed analysis, follow
+For installed Skills, use this launcher; it provisions a cached runtime outside
+the Skill root and works when the installation is read-only. Do not install the
+Skill itself in editable mode. For local development, `scripts/analyze.py`
+remains the low-level CLI. Do not call Wikimedia APIs directly or calculate
+results manually. Before returning a completed analysis, follow
 [`artifact-validation.md`](references/workflows/artifact-validation.md).
 
 ## Stop and Clarify
@@ -127,8 +141,10 @@ periods are distinct. A not-evaluable criterion is neither a pass nor a
 failure. A language edition describes readership of that Wikipedia edition,
 not a country. Pageviews count page visits, and topic sums may include repeated
 or overlapping readers. Do not turn pageviews into demand, intent, a forecast,
-or a composite opportunity score. See [`methodology.md`](references/methodology.md)
-for metric definitions and limits.
+or a composite opportunity score. Before interpreting results, follow
+[`result-interpretation.md`](references/workflows/result-interpretation.md).
+See [`methodology.md`](references/methodology.md) for metric definitions and
+limits.
 
 ## Output Contract
 
