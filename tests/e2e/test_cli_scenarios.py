@@ -23,6 +23,7 @@ from wiki_trends.models import (
     TopicResolution,
     TopicSelectionMethod,
 )
+from wiki_trends.pipeline import AnalysisRunResult
 from wiki_trends.report import AnalysisReport
 from wiki_trends.wikipedia_client import PageviewsFetchResult
 
@@ -48,10 +49,10 @@ def test_cli_invokes_the_shared_analysis_pipeline(
     expected_paths = (tmp_path / "analysis.json", tmp_path / "trend.png", tmp_path / "report.pdf")
     received_languages: list[list[str]] = []
 
-    def run_stub(config: object, output_root: Path) -> tuple[Path, Path, Path]:
+    def run_stub(config: object, output_root: Path) -> AnalysisRunResult:
         received_languages.append(config.languages)  # type: ignore[attr-defined]
         assert output_root == tmp_path / "output"
-        return expected_paths
+        return AnalysisRunResult(expected_paths[0], [expected_paths[1]], expected_paths[2])
 
     monkeypatch.setattr(cli, "run_analysis", run_stub)
 
@@ -210,7 +211,8 @@ def test_mocked_pipeline_writes_json_png_and_one_page_pdf(
     monkeypatch.setattr(pipeline, "ArticleResolver", lambda: _Resolver(result))
     monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", _Pageviews)
 
-    json_path, png_path, pdf_path = pipeline.run_analysis(config, tmp_path / "output")
+    run_result = pipeline.run_analysis(config, tmp_path / "output")
+    json_path, png_path, pdf_path = run_result.analysis_json, run_result.charts[0], run_result.pdf
     report = json.loads(json_path.read_text(encoding="utf-8"))
     AnalysisReport.model_validate(report)
 
@@ -221,6 +223,85 @@ def test_mocked_pipeline_writes_json_png_and_one_page_pdf(
     assert report["artifacts"]["pdf"] == str(pdf_path)
     assert all(section["absolute_metrics"] is not None for section in report["languages"].values())
     assert all(source["retrieval"] == "network" for source in report["sources"])
+
+
+def test_seven_language_pipeline_returns_every_generated_chart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pipeline returns actual per-language charts, never its unused base name."""
+    languages = ["en", "uk", "pl", "cs", "de", "fr", "es"]
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "article", "value": "Astronomy", "source_language": "en"},
+            "languages": languages,
+            "output": {"json": True, "charts": True, "pdf": False},
+        }
+    )
+    resolution = ArticleResolution(
+        requested_title="Astronomy",
+        source_language="en",
+        status=ResolutionStatus.RESOLVED,
+        articles=[_article(language, "Astronomy") for language in languages],
+    )
+    monkeypatch.setattr(pipeline, "ArticleResolver", lambda: _Resolver(resolution))
+    monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", _Pageviews)
+    generated_paths: list[Path] = []
+
+    def render_seven_charts(
+        series_by_language: dict[str, list[MonthlyPageview]], title: str, base_path: Path
+    ) -> list[Path]:
+        del title
+        paths = [
+            base_path.with_name(f"{base_path.stem}-{language}{base_path.suffix}") for language in series_by_language
+        ]
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        generated_paths.extend(paths)
+        return paths
+
+    monkeypatch.setattr(pipeline, "render_comparison_charts", render_seven_charts)
+
+    result = pipeline.run_analysis(config, tmp_path / "output")
+    report = json.loads(result.analysis_json.read_text(encoding="utf-8"))
+
+    assert result.analysis_json is not None
+    assert result.pdf is None
+    assert result.charts == generated_paths
+    assert len(result.charts) == len(languages) == 7
+    assert all(path.exists() for path in result.charts)
+    assert not (tmp_path / "output" / f"{report['run']['slug']}-trend.png").exists()
+    assert report["artifacts"]["charts"] == [str(path) for path in result.charts]
+
+
+def test_pdf_only_pipeline_hides_its_internal_chart_and_json_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chart rendered solely as PDF input is not a requested chart artifact."""
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "article", "value": "Astronomy", "source_language": "en"},
+            "languages": ["en"],
+            "output": {"json": False, "charts": False, "pdf": True},
+        }
+    )
+    resolution = ArticleResolution(
+        requested_title="Astronomy",
+        source_language="en",
+        status=ResolutionStatus.RESOLVED,
+        articles=[_article("en", "Astronomy")],
+    )
+    monkeypatch.setattr(pipeline, "ArticleResolver", lambda: _Resolver(resolution))
+    monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", _Pageviews)
+
+    result = pipeline.run_analysis(config, tmp_path / "output")
+
+    assert result.analysis_json is None
+    assert result.charts == []
+    assert result.pdf is not None and result.pdf.exists()
+    assert len(PdfReader(result.pdf).pages) == 1
 
 
 def test_daily_pipeline_reports_exact_dates_baseline_thresholds_and_artifacts(
@@ -259,7 +340,8 @@ def test_daily_pipeline_reports_exact_dates_baseline_thresholds_and_artifacts(
     monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", _Pageviews)
     monkeypatch.setattr(pipeline, "latest_complete_day", lambda: date(2026, 8, 5))
 
-    json_path, chart_path, pdf_path = pipeline.run_analysis(config, tmp_path / "output")
+    run_result = pipeline.run_analysis(config, tmp_path / "output")
+    json_path, chart_path, pdf_path = run_result.analysis_json, run_result.charts[0], run_result.pdf
     assert json_path is not None and chart_path is not None and pdf_path is not None
     report = json.loads(json_path.read_text(encoding="utf-8"))
 
@@ -362,7 +444,8 @@ def test_topic_pipeline_uses_real_resolver_and_one_project_denominator(
         }
     )
 
-    json_path, chart_path, pdf_path = pipeline.run_analysis(config, tmp_path / "output")
+    run_result = pipeline.run_analysis(config, tmp_path / "output")
+    json_path, chart_path, pdf_path = run_result.analysis_json, run_result.charts[0], run_result.pdf
 
     assert json_path is not None and chart_path is not None and pdf_path is not None
     report = json.loads(json_path.read_text(encoding="utf-8"))
@@ -425,7 +508,8 @@ def test_ambiguous_topic_stops_before_pageview_collection(
         }
     )
 
-    json_path, _, _ = pipeline.run_analysis(config, tmp_path / "output")
+    run_result = pipeline.run_analysis(config, tmp_path / "output")
+    json_path = run_result.analysis_json
 
     assert json_path is not None
     report = json.loads(json_path.read_text(encoding="utf-8"))

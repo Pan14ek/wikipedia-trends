@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from datetime import date
@@ -214,27 +213,6 @@ def test_monthly_pageview_distinguishes_missing_observations() -> None:
         MonthlyPageview(month=date(2026, 8, 1), views=0, status=ObservationStatus.UNKNOWN)
     with pytest.raises(ValidationError, match="first day"):
         MonthlyPageview(month=date(2026, 8, 2), views=1)
-
-
-def test_cli_prints_generated_artifact_paths_for_valid_config(tmp_path: Path) -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "scripts/analyze.py",
-            "--config",
-            "examples/astronomy-uk.json",
-            "--output-dir",
-            str(tmp_path / "output"),
-        ],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    artifact_paths = json.loads(result.stdout)
-    assert set(artifact_paths) == {"analysis_json", "chart", "pdf"}
 
 
 def test_cli_returns_nonzero_for_invalid_config(tmp_path: Path) -> None:

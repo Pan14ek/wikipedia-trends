@@ -40,6 +40,7 @@ new artifacts; do not conflate them with the previous run.
 
 ## Related References
 
+- [CLI execution](../cli.md)
 - [Input schema](../input-schema.md)
 - [Output schema](../output-schema.md)
 - [Artifact validation](artifact-validation.md)

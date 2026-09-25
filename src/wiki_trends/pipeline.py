@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -51,7 +52,16 @@ __all__ = ["run_analysis"]
 _LOGGER = logging.getLogger(__name__)
 
 
-def run_analysis(config: AnalysisConfig, output_root: Path) -> tuple[Path | None, Path | None, Path | None]:
+@dataclass(frozen=True)
+class AnalysisRunResult:
+    """Exact paths to the user-visible artifacts produced by one run."""
+
+    analysis_json: Path | None
+    charts: list[Path]
+    pdf: Path | None
+
+
+def run_analysis(config: AnalysisConfig, output_root: Path) -> AnalysisRunResult:
     """Collect and report one configured daily or monthly analysis run."""
     requested_start, requested_end = resolve_period(config.period)
     granularity = config.period.resolved_granularity
@@ -228,18 +238,20 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> tuple[Path | None
         artifacts=ReportArtifacts(),
     )
 
-    chart_path: Path | None = None
+    chart_paths: list[Path] = []
     pdf_path: Path | None = None
     if config.output.charts or config.output.pdf:
         chart_path = output_root / f"{slug}-trend.png"
-        charts = (
+        generated_charts = (
             render_comparison_charts(language_series, config.query.value, chart_path)
             if len(language_series) > 1
             else [render_trend_chart(next(iter(language_series.values())), config.query.value, chart_path)]
         )
-        report.artifacts.charts = [str(chart) for chart in charts] if config.output.charts else []
+        if config.output.charts:
+            chart_paths = generated_charts
+            report.artifacts.charts = [str(chart) for chart in chart_paths]
         if config.output.pdf:
-            pdf_path = write_pdf_report(report, charts[0], output_root / "pdf")
+            pdf_path = write_pdf_report(report, generated_charts[0], output_root / "pdf")
             report.artifacts.pdf = str(pdf_path)
     json_path = write_analysis_report(report, output_root) if config.output.json_output else None
     _LOGGER.info(
@@ -247,10 +259,10 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> tuple[Path | None
         extra={
             "languages": len(config.languages),
             "granularity": granularity.value,
-            "artifacts": 1 + int(chart_path is not None) + int(pdf_path is not None),
+            "artifacts": int(json_path is not None) + len(chart_paths) + int(pdf_path is not None),
         },
     )
-    return json_path, chart_path if config.output.charts else None, pdf_path
+    return AnalysisRunResult(analysis_json=json_path, charts=chart_paths, pdf=pdf_path)
 
 
 def _available_window(start: date, end: date, granularity: Granularity) -> tuple[date, date]:

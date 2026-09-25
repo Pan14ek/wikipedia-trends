@@ -58,6 +58,7 @@ limitations. Preserve unknown topic buckets and proxy status from Python.
 
 ## Related References
 
+- [CLI execution](../cli.md)
 - [Input schema](../input-schema.md)
 - [Output schema](../output-schema.md)
 - [Methodology](../methodology.md)

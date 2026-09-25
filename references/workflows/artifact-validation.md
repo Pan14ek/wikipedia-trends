@@ -6,7 +6,7 @@ Before returning any completed analysis with requested output artifacts.
 
 ## Inputs
 
-- Configured outputs and paths reported by the CLI.
+- The current CLI success payload: `analysis_json`, `charts[]`, and `pdf`.
 - `analysis.json` when JSON output is enabled.
 
 ## Preconditions
@@ -16,18 +16,23 @@ Before returning any completed analysis with requested output artifacts.
 
 ## Process
 
-1. If JSON is enabled, verify the CLI-produced `analysis.json` exists, parse it,
+1. Treat the current CLI success payload as the authoritative source of paths.
+   `analysis_json` and `pdf` are strings or JSON `null`; `charts` is an array.
+   Never read the old singular `chart` field or convert `null` into a path.
+2. If `analysis_json` is a path, verify that exact file exists and parses,
    confirm supported `schema_version` `2.1.0`, and read findings, warnings,
    resolution, comparison, and artifact paths from it.
-2. If charts are enabled, verify every reported PNG path exists.
-3. If PDF is enabled, verify the reported PDF exists and is readable. A path
+3. For each requested chart in `charts[]`, verify that exact PNG path exists
+   and is valid. Validate every path, including all per-language charts for
+   comparisons with more than six languages.
+4. If `pdf` is a path, verify the reported PDF exists and is readable. A path
    string alone does not prove successful output.
-4. If `output.json = false`, do not assume `analysis.json` exists. Validate
-   only other configured outputs and do not invent metrics unavailable from a
-   validated machine-readable result. For detailed numeric interpretation,
-   prefer JSON as an audit artifact unless the user explicitly forbids it; do
-   not silently override that choice.
-5. If a requested artifact is missing or invalid, report the failure and do
+5. If `analysis_json` is `null` (`output.json = false`), do not assume
+   `analysis.json` exists. Validate only other returned outputs and do not
+   invent metrics unavailable from a validated machine-readable report. For
+   detailed numeric interpretation, prefer JSON as an audit artifact unless
+   the user explicitly forbids it; do not silently override that choice.
+6. If a requested artifact is missing or invalid, report the failure and do
    not claim that it was created successfully.
 
 ## Stop Conditions
@@ -42,5 +47,6 @@ validation failures plainly.
 
 ## Related References
 
+- [CLI execution](../cli.md)
 - [Output schema](../output-schema.md)
 - [Input schema](../input-schema.md)

@@ -89,15 +89,19 @@ references.
 
 ## Run the Analysis
 
-Build a config that matches the input contract and run:
+All analyses must use the project CLI. Before execution, follow
+[`cli.md`](references/cli.md) for the complete config → CLI → report →
+artifact-validation lifecycle. Build a config that matches the input contract
+and run:
 
 ```bash
-python scripts/analyze.py --config <config.json> --output-dir <output-dir>
+python <skill-root>/scripts/analyze.py \
+  --config <config.json> \
+  --output-dir <output-dir>
 ```
 
-If `python` is unavailable and the repository virtual environment exists, use
-`.venv/bin/python` with the same arguments. Do not reconstruct results after a
-CLI failure. Before returning a completed analysis, load and follow
+Do not call Wikimedia APIs directly or calculate results manually. Before
+returning a completed analysis, follow
 [`artifact-validation.md`](references/workflows/artifact-validation.md).
 
 ## Stop and Clarify
@@ -132,5 +136,6 @@ artifacts. Follow the artifact workflow when JSON is disabled; do not assume
 | Need | Reference |
 |---|---|
 | Build or modify an analysis config | [`input-schema.md`](references/input-schema.md) |
+| Execute the analysis CLI and interpret its output | [`cli.md`](references/cli.md) |
 | Read or validate `analysis.json` | [`output-schema.md`](references/output-schema.md) |
 | Explain metrics, resolution, quality, or interpretation limits | [`methodology.md`](references/methodology.md) |

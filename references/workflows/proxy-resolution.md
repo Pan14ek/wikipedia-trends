@@ -40,6 +40,7 @@ comparison-equivalent. Preserve the direct-comparison limitation.
 
 ## Related References
 
+- [CLI execution](../cli.md)
 - [Input schema](../input-schema.md)
 - [Output schema](../output-schema.md)
 - [Methodology](../methodology.md)
