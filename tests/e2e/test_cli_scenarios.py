@@ -31,9 +31,9 @@ from wiki_trends.wikipedia_client import PageviewsFetchResult
 @pytest.mark.parametrize(
     ("name", "query", "languages"),
     [
-        ("astronomy", {"mode": "article", "value": "Astronomy", "source_language": "uk"}, ["uk"]),
-        ("fasting", {"mode": "article", "value": "Intermittent fasting", "source_language": "pl"}, ["pl", "cs"]),
-        ("learning-english", {"mode": "topic", "value": "Learning English"}, ["pl", "cs", "uk"]),
+        ("astronomy", {"mode": "article", "value": "Astronomy", "source_language": "en"}, ["uk"]),
+        ("fasting", {"mode": "article", "value": "Intermittent fasting", "source_language": "en"}, ["pl", "cs"]),
+        ("learning-english", {"mode": "topic", "value": "learning English", "source_language": "en"}, ["pl", "cs", "uk"]),
     ],
 )
 def test_cli_invokes_the_shared_analysis_pipeline(
@@ -175,9 +175,9 @@ def _article(language: str, title: str) -> ResolvedArticle:
 @pytest.mark.parametrize(
     ("query", "languages", "topic_mode"),
     [
-        ({"mode": "article", "value": "Astronomy", "source_language": "uk"}, ["uk"], False),
-        ({"mode": "article", "value": "Intermittent fasting", "source_language": "pl"}, ["pl", "cs"], False),
-        ({"mode": "topic", "value": "Learning English"}, ["pl", "cs", "uk"], True),
+        ({"mode": "article", "value": "Astronomy", "source_language": "en"}, ["uk"], False),
+        ({"mode": "article", "value": "Intermittent fasting", "source_language": "en"}, ["pl", "cs"], False),
+        ({"mode": "topic", "value": "learning English", "source_language": "en"}, ["pl", "cs", "uk"], True),
     ],
 )
 def test_mocked_pipeline_writes_json_png_and_one_page_pdf(

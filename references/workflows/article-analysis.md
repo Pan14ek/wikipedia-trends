@@ -8,19 +8,22 @@ The user refers to one specific Wikipedia concept or page (`query.mode = "articl
 
 - Article subject or requested page title.
 - One or more requested Wikipedia language editions.
-- Source language when more than one edition is requested.
+- Language of the supplied source title/concept phrase.
 - Period, granularity, and requested outputs when the user specifies them.
 
 ## Preconditions
 
 - The article concept is clear enough to resolve.
-- A multi-language request has an explicit or safely inferable source language.
+- The source title's language is known or safely identifiable.
+- A multi-language request has an explicit source language before config creation.
 
 ## Process
 
-1. Use the requested language as `source_language` for a one-language request.
-2. For multiple languages, identify the source edition; do not translate or
-   guess a canonical title in another language.
+1. Set `source_language` to the language of the supplied source title/concept
+   phrase. For a one-language request, target-language inference is safe only
+   when that title is intentionally in the target edition's language.
+2. For multiple languages, provide `source_language` explicitly; it may differ
+   from every requested edition. Do not translate or guess a canonical title.
 3. Run article resolution through the project CLI. The resolver uses structured
    Wikipedia/Wikidata links to map equivalents.
 4. Interpret `resolved`, `partial`, and `requires_clarification` as recorded.
