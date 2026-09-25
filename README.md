@@ -18,5 +18,7 @@ python scripts/analyze.py --help
 Implemented milestones cover configuration validation, Wikimedia article and
 project pageview collection, article resolution, absolute and YoY metrics,
 charts, data-quality diagnostics, normalized interest, and robust anomaly
-detection, and bootstrap YoY confidence intervals. The CLI remains an M02 validation placeholder; assembled analyses,
-reports, and caching remain out of scope until later milestones.
+detection, bootstrap YoY confidence intervals, and transparent topic-mode
+article selection and aggregation. The CLI remains an M02 validation
+placeholder; assembled analyses, reports, and caching remain out of scope
+until later milestones.

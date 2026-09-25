@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Final
 
@@ -18,6 +19,8 @@ from wiki_trends.models import (
     ResolutionMethod,
     ResolutionStatus,
     ResolvedArticle,
+    TopicResolution,
+    TopicSelectionMethod,
 )
 
 __all__ = [
@@ -30,6 +33,11 @@ __all__ = [
 _DEFAULT_TIMEOUT_SECONDS: Final = 10.0
 _DEFAULT_USER_AGENT: Final = "WikipediaTrends/0.1.0 (https://www.mediawiki.org/wiki/API:Main_page)"
 _LANGUAGE_PATTERN: Final = re.compile(r"^[a-z][a-z0-9-]*$")
+_TITLE_TOKEN_PATTERN: Final = re.compile(r"\w+", re.UNICODE)
+_PARENTHETICAL_QUALIFIER_PATTERN: Final = re.compile(r"\(([^()]+)\)")
+_TOPIC_SEARCH_RESULT_LIMIT: Final = 5
+_TOPIC_SELECTION_LIMIT: Final = 3
+_AMBIGUITY_SCORE_DELTA: Final = 0.2
 
 
 class ArticleResolverError(RuntimeError):
@@ -45,12 +53,13 @@ class ArticleResolverUnavailableError(ArticleResolverError):
 
 
 class ArticleResolver:
-    """Resolve one concrete Wikipedia article across requested language editions.
+    """Resolve concrete articles and transparent language-local topic selections.
 
-    The resolver keeps all HTTP calls at this boundary and relies only on
-    MediaWiki language links and Wikidata sitelinks; it never translates or
-    searches titles heuristically. An injected HTTP client remains owned by its
-    caller, which keeps mocked integration tests deterministic.
+    The resolver keeps all HTTP calls at this boundary. Article mode relies on
+    MediaWiki language links and Wikidata sitelinks without translation or
+    heuristic search; topic mode uses the documented MediaWiki-search ranking
+    rule. An injected HTTP client remains owned by its caller, which keeps
+    mocked integration tests deterministic.
     """
 
     def __init__(
@@ -96,8 +105,8 @@ class ArticleResolver:
         if self._owns_client:
             self._client.close()
 
-    def resolve(self, query: QueryConfig, languages: Sequence[str]) -> ArticleResolution:
-        """Resolve an article-mode configuration to canonical edition articles.
+    def resolve(self, query: QueryConfig, languages: Sequence[str]) -> ArticleResolution | list[TopicResolution]:
+        """Resolve an article or topic configuration to canonical edition articles.
 
         A single requested language is sufficient to infer the source language.
         Multi-language inputs must set ``query.source_language`` explicitly,
@@ -105,12 +114,12 @@ class ArticleResolver:
         concept.
 
         Raises:
-            ArticleResolverError: If the query is not an article or source page is absent.
+            ArticleResolverError: If a requested source page is absent.
             ValueError: If requested languages cannot safely identify a source.
         """
-        if query.mode is not QueryMode.ARTICLE:
-            raise ArticleResolverError("article resolution only supports query.mode='article'")
-        return self.resolve_article(query.value, languages, source_language=query.source_language)
+        if query.mode is QueryMode.ARTICLE:
+            return self.resolve_article(query.value, languages, source_language=query.source_language)
+        return self.resolve_topic(query.value, languages, article_overrides=query.article_overrides)
 
     def resolve_article(
         self,
@@ -193,6 +202,181 @@ class ArticleResolver:
             missing_languages=missing_languages,
         )
 
+    def resolve_topic(
+        self,
+        requested_topic: str,
+        languages: Sequence[str],
+        *,
+        article_overrides: Mapping[str, Sequence[str]] | None = None,
+    ) -> list[TopicResolution]:
+        """Resolve a topic independently within each requested language edition.
+
+        Each language uses its own MediaWiki search results. This avoids
+        treating translated titles as equivalent concepts before M13 defines
+        cross-language comparison. Overrides skip search and name the exact
+        one-to-three articles an agent or user has reviewed.
+
+        Raises:
+            ValueError: If the topic, languages, or override keys are invalid.
+            ArticleResolverError: If MediaWiki returns malformed data.
+        """
+        topic = _require_nonblank_text(requested_topic, "requested_topic")
+        requested_languages = _validate_languages(languages)
+        validated_overrides = _validate_topic_overrides(article_overrides, requested_languages)
+        self._logger.info(
+            "Resolving Wikipedia topic",
+            extra={
+                "requested_language_count": len(requested_languages),
+                "override_language_count": len(validated_overrides),
+            },
+        )
+        resolutions = [
+            self.resolve_topic_language(topic, language, article_override=validated_overrides.get(language))
+            for language in requested_languages
+        ]
+        self._logger.info(
+            "Wikipedia topic resolution completed",
+            extra={
+                "requested_language_count": len(requested_languages),
+                "resolved_language_count": sum(
+                    resolution.status is ResolutionStatus.RESOLVED for resolution in resolutions
+                ),
+                "clarification_language_count": sum(
+                    resolution.status is ResolutionStatus.REQUIRES_CLARIFICATION for resolution in resolutions
+                ),
+            },
+        )
+        return resolutions
+
+    def resolve_topic_language(
+        self,
+        requested_topic: str,
+        language: str,
+        *,
+        article_override: Sequence[str] | None = None,
+    ) -> TopicResolution:
+        """Resolve one language-local topic through search or reviewed titles."""
+        topic = _require_nonblank_text(requested_topic, "requested_topic")
+        validated_language = _validate_language(language)
+        if article_override is not None:
+            return self._resolve_topic_override(topic, validated_language, article_override)
+
+        search_titles = self._search_titles(validated_language, topic)
+        candidates = self._valid_topic_candidates(topic, validated_language, search_titles)
+        if _topic_candidates_are_ambiguous(candidates):
+            return _topic_clarification(
+                topic,
+                validated_language,
+                len(search_titles),
+                "ambiguous_topic_candidates",
+            )
+        selected_articles = [_resolved_topic_article(candidate) for candidate in candidates[:_TOPIC_SELECTION_LIMIT]]
+        if not selected_articles:
+            return _topic_clarification(
+                topic,
+                validated_language,
+                len(search_titles),
+                "no_valid_topic_candidates",
+            )
+        return TopicResolution(
+            requested_topic=topic,
+            language=validated_language,
+            status=ResolutionStatus.RESOLVED,
+            selected_articles=selected_articles,
+            candidate_count=len(search_titles),
+            selection_method=TopicSelectionMethod.MEDIAWIKI_SEARCH_RANK_PLUS_TITLE_OVERLAP,
+        )
+
+    def _resolve_topic_override(
+        self,
+        topic: str,
+        language: str,
+        article_override: Sequence[str],
+    ) -> TopicResolution:
+        """Resolve reviewed topic article titles without hidden search selection."""
+        titles = _validate_override_titles(article_override, language)
+        selected_articles: list[ResolvedArticle] = []
+        selected_page_ids: set[int] = set()
+        for title in titles:
+            page = self._lookup_page(language, title)
+            if page is None:
+                raise ArticleNotFoundError(f"Wikipedia article '{title}' does not exist in {language}.wikipedia")
+            if page.is_disambiguation or _is_detectable_list_page(page.title):
+                return _topic_clarification(
+                    topic,
+                    language,
+                    len(titles),
+                    "override_not_article",
+                    TopicSelectionMethod.EXPLICIT_ARTICLE_OVERRIDE,
+                )
+            if page.page_id in selected_page_ids:
+                continue
+            selected_page_ids.add(page.page_id)
+            selected_articles.append(_resolved_article_from_page(language, title, page))
+
+        if not selected_articles:
+            return _topic_clarification(
+                topic,
+                language,
+                len(titles),
+                "no_valid_topic_candidates",
+                TopicSelectionMethod.EXPLICIT_ARTICLE_OVERRIDE,
+            )
+        return TopicResolution(
+            requested_topic=topic,
+            language=language,
+            status=ResolutionStatus.RESOLVED,
+            selected_articles=selected_articles,
+            candidate_count=len(titles),
+            selection_method=TopicSelectionMethod.EXPLICIT_ARTICLE_OVERRIDE,
+        )
+
+    def _search_titles(self, language: str, topic: str) -> list[str]:
+        """Retrieve the bounded, rank-ordered MediaWiki search titles."""
+        payload = self._get_json(
+            _mediawiki_url(language),
+            {
+                "action": "query",
+                "format": "json",
+                "formatversion": "2",
+                "list": "search",
+                "srsearch": topic,
+                "srlimit": str(_TOPIC_SEARCH_RESULT_LIMIT),
+                "srnamespace": "0",
+            },
+        )
+        return _parse_search_titles(payload)
+
+    def _valid_topic_candidates(
+        self,
+        topic: str,
+        language: str,
+        search_titles: Sequence[str],
+    ) -> list[_TopicCandidate]:
+        """Canonicalize, filter, score, and deterministically sort candidates."""
+        candidates: list[_TopicCandidate] = []
+        seen_page_ids: set[int] = set()
+        for search_rank, title in enumerate(search_titles, start=1):
+            page = self._lookup_page(language, title)
+            if page is None or page.is_disambiguation or _is_detectable_list_page(page.title):
+                continue
+            if page.page_id in seen_page_ids:
+                continue
+            seen_page_ids.add(page.page_id)
+            candidates.append(
+                _TopicCandidate(
+                    language=language,
+                    search_rank=search_rank,
+                    requested_title=title,
+                    page=page,
+                    relevance=_topic_relevance(topic, page.title, search_rank),
+                ),
+            )
+        return sorted(
+            candidates,
+            key=lambda candidate: (-candidate.relevance, candidate.search_rank, candidate.page.title.casefold()),
+        )
+
     def _lookup_page(self, language: str, title: str) -> _PageLookup | None:
         payload = self._get_json(
             _mediawiki_url(language),
@@ -267,6 +451,133 @@ class _PageLookup:
         self.wikidata_id = wikidata_id
         self.language_links = language_links
         self.is_disambiguation = is_disambiguation
+
+
+@dataclass(frozen=True)
+class _TopicCandidate:
+    """One valid, canonical topic-search result before final selection."""
+
+    language: str
+    search_rank: int
+    requested_title: str
+    page: _PageLookup
+    relevance: float
+
+
+def _parse_search_titles(payload: Mapping[str, object]) -> list[str]:
+    """Validate MediaWiki's rank-ordered search response."""
+    query = _require_mapping(payload.get("query"), "MediaWiki response must contain a query object")
+    raw_results = query.get("search")
+    if not isinstance(raw_results, list):
+        raise ArticleResolverError("MediaWiki search response must contain a search result list")
+    if len(raw_results) > _TOPIC_SEARCH_RESULT_LIMIT:
+        raise ArticleResolverError("MediaWiki search response exceeded the requested result limit")
+    return [
+        _require_text(
+            _require_mapping(raw_result, "MediaWiki search response contains an invalid result").get("title"),
+            "MediaWiki search result has an invalid title",
+        )
+        for raw_result in raw_results
+    ]
+
+
+def _validate_topic_overrides(
+    article_overrides: Mapping[str, Sequence[str]] | None,
+    languages: Sequence[str],
+) -> dict[str, tuple[str, ...]]:
+    """Validate direct callers' per-language override mapping at the boundary."""
+    if article_overrides is None:
+        return {}
+    valid_languages = set(languages)
+    validated: dict[str, tuple[str, ...]] = {}
+    for language, titles in article_overrides.items():
+        validated_language = _validate_language(language)
+        if validated_language not in valid_languages:
+            raise ValueError(f"article override language '{validated_language}' is not in 'languages'")
+        validated[validated_language] = _validate_override_titles(titles, validated_language)
+    return validated
+
+
+def _validate_override_titles(titles: Sequence[str], language: str) -> tuple[str, ...]:
+    """Require one to three unique, non-blank reviewed article titles."""
+    normalized_titles = tuple(_require_nonblank_text(title, "article_override") for title in titles)
+    if not 1 <= len(normalized_titles) <= _TOPIC_SELECTION_LIMIT:
+        raise ValueError(f"article override for '{language}' must contain one to three article titles")
+    if len(normalized_titles) != len(set(normalized_titles)):
+        raise ValueError(f"article override for '{language}' must not contain duplicate article titles")
+    return normalized_titles
+
+
+def _topic_relevance(topic: str, title: str, search_rank: int) -> float:
+    """Score a canonical candidate from title-token overlap and search rank."""
+    topic_tokens = set(_TITLE_TOKEN_PATTERN.findall(topic.casefold()))
+    title_tokens = set(_TITLE_TOKEN_PATTERN.findall(title.casefold()))
+    overlap_ratio = len(topic_tokens & title_tokens) / len(topic_tokens) if topic_tokens else 0.0
+    rank_score = (_TOPIC_SEARCH_RESULT_LIMIT - search_rank + 1) / _TOPIC_SEARCH_RESULT_LIMIT
+    return overlap_ratio + rank_score
+
+
+def _topic_candidates_are_ambiguous(candidates: Sequence[_TopicCandidate]) -> bool:
+    """Detect near-equal top results that name distinct parenthetical concepts."""
+    if len(candidates) < 2:
+        return False
+    first, second = candidates[0], candidates[1]
+    if first.relevance - second.relevance > _AMBIGUITY_SCORE_DELTA:
+        return False
+    first_qualifier = _parenthetical_qualifier(first.page.title)
+    second_qualifier = _parenthetical_qualifier(second.page.title)
+    return first_qualifier is not None and second_qualifier is not None and first_qualifier != second_qualifier
+
+
+def _parenthetical_qualifier(title: str) -> str | None:
+    """Return a normalized title qualifier when a title explicitly provides one."""
+    match = _PARENTHETICAL_QUALIFIER_PATTERN.search(title)
+    if match is None:
+        return None
+    qualifier = match.group(1).strip().casefold()
+    return qualifier or None
+
+
+def _is_detectable_list_page(title: str) -> bool:
+    """Exclude the common explicit list-page title form from search selection."""
+    return title.casefold().startswith("list of ")
+
+
+def _resolved_article_from_page(language: str, requested_title: str, page: _PageLookup) -> ResolvedArticle:
+    """Expose the canonical article and redirect provenance for one topic page."""
+    return ResolvedArticle(
+        language=language,
+        project=f"{language}.wikipedia",
+        requested_title=requested_title,
+        canonical_title=page.title,
+        page_id=page.page_id,
+        wikidata_id=page.wikidata_id,
+        url=page.url,
+        resolution_method=_resolution_method_for_page(ResolutionMethod.INPUT_ARTICLE, requested_title, page.title),
+    )
+
+
+def _resolved_topic_article(candidate: _TopicCandidate) -> ResolvedArticle:
+    """Convert one selected topic candidate to public resolution provenance."""
+    return _resolved_article_from_page(candidate.language, candidate.requested_title, candidate.page)
+
+
+def _topic_clarification(
+    topic: str,
+    language: str,
+    candidate_count: int,
+    reason: str,
+    selection_method: TopicSelectionMethod = TopicSelectionMethod.MEDIAWIKI_SEARCH_RANK_PLUS_TITLE_OVERLAP,
+) -> TopicResolution:
+    """Construct one structured topic clarification result without selecting pages."""
+    return TopicResolution(
+        requested_topic=topic,
+        language=language,
+        status=ResolutionStatus.REQUIRES_CLARIFICATION,
+        candidate_count=candidate_count,
+        selection_method=selection_method,
+        clarification=ResolutionClarification(language=language, title=topic, reason=reason),
+    )
 
 
 def _parse_page_lookup(payload: Mapping[str, object], language: str) -> _PageLookup | None:

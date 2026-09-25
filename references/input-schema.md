@@ -23,8 +23,27 @@ at every level.
 trimmed string. `query.source_language` is optional and is used by M04 article
 resolution. It is required when resolving an article into multiple language
 editions, since the resolver must not guess which language edition owns a title.
-For one requested language it is inferred from that language. `languages`
-contains one to 20 unique lowercase codes.
+For one requested language it is inferred from that language. For
+`query.mode = "topic"`, `query.article_overrides` can replace MediaWiki search
+selection for reviewed languages. It is an optional object keyed by a language
+included in `languages`; each key supplies one to three unique, non-empty
+article titles:
+
+```json
+{
+  "query": {
+    "mode": "topic",
+    "value": "learning English",
+    "article_overrides": {
+      "en": ["English language", "English grammar"]
+    }
+  },
+  "languages": ["en"]
+}
+```
+
+Article overrides are rejected for article mode. `languages` contains one to
+20 unique lowercase codes.
 `period.months` is an integer from 12 through 120 and defaults to 24.
 Only monthly granularity is supported. The `period`, `criteria`, and `output`
 objects can be omitted; their defaults are shown above.

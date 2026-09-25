@@ -48,6 +48,10 @@ def _wikidata_entity(identifier: str, sitelinks: dict[str, str]) -> dict[str, ob
     }
 
 
+def _search_results(titles: list[str]) -> dict[str, object]:
+    return {"query": {"search": [{"title": title} for title in titles]}}
+
+
 def test_exact_article_resolves_in_the_only_requested_language() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.host == "uk.wikipedia.org"
@@ -181,3 +185,97 @@ def test_multi_language_query_requires_an_explicit_source_language() -> None:
         pytest.raises(ValueError, match="source_language"),
     ):
         ArticleResolver(http_client=http_client).resolve(query, ["en", "uk"])
+
+
+def test_topic_mode_selects_one_obvious_canonical_article() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("list") == "search":
+            assert request.url.params["srsearch"] == "Astronomy"
+            assert request.url.params["srlimit"] == "5"
+            return httpx.Response(200, json=_search_results(["Astronomy"]))
+        assert request.url.params["titles"] == "Astronomy"
+        return httpx.Response(200, json=_page("Astronomy", 18831, wikidata_id="Q333"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = ArticleResolver(http_client=http_client).resolve_topic("Astronomy", ["en"])
+
+    assert result[0].status is ResolutionStatus.RESOLVED
+    assert result[0].candidate_count == 1
+    assert [article.canonical_title for article in result[0].selected_articles] == ["Astronomy"]
+    assert result[0].selection_method.value == "mediawiki_search_rank_plus_title_overlap"
+
+
+def test_topic_mode_selects_three_relevant_articles_and_excludes_detectable_lists() -> None:
+    pages = {
+        "English language": _page("English language", 1),
+        "English grammar": _page("English grammar", 2),
+        "English literature": _page("English literature", 3),
+        "List of English-language topics": _page("List of English-language topics", 4),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("list") == "search":
+            return httpx.Response(200, json=_search_results(list(pages)))
+        return httpx.Response(200, json=pages[request.url.params["titles"]])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = ArticleResolver(http_client=http_client).resolve_topic("learning English", ["en"])
+
+    assert [article.canonical_title for article in result[0].selected_articles] == [
+        "English language",
+        "English grammar",
+        "English literature",
+    ]
+
+
+def test_topic_mode_excludes_disambiguation_pages() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("list") == "search":
+            return httpx.Response(200, json=_search_results(["Mercury"]))
+        return httpx.Response(200, json=_page("Mercury", 1, disambiguation=True))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = ArticleResolver(http_client=http_client).resolve_topic("Mercury", ["en"])
+
+    assert result[0].status is ResolutionStatus.REQUIRES_CLARIFICATION
+    assert result[0].clarification is not None
+    assert result[0].clarification.reason == "no_valid_topic_candidates"
+    assert result[0].selected_articles == []
+
+
+def test_ambiguous_topic_returns_a_structured_clarification() -> None:
+    pages = {
+        "Mercury (planet)": _page("Mercury (planet)", 1),
+        "Mercury (element)": _page("Mercury (element)", 2),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("list") == "search":
+            return httpx.Response(200, json=_search_results(list(pages)))
+        return httpx.Response(200, json=pages[request.url.params["titles"]])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = ArticleResolver(http_client=http_client).resolve_topic("Mercury", ["en"])
+
+    assert result[0].status is ResolutionStatus.REQUIRES_CLARIFICATION
+    assert result[0].clarification is not None
+    assert result[0].clarification.reason == "ambiguous_topic_candidates"
+
+
+def test_topic_mode_uses_explicit_per_language_override_without_searching() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("list") is None
+        assert request.url.params["titles"] == "English language"
+        return httpx.Response(200, json=_page("English language", 1))
+
+    query = QueryConfig(
+        mode="topic",
+        value="learning English",
+        article_overrides={"en": ["English language"]},
+    )
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = ArticleResolver(http_client=http_client).resolve(query, ["en"])
+
+    assert isinstance(result, list)
+    assert result[0].selection_method.value == "explicit_article_override"
+    assert result[0].selected_articles[0].canonical_title == "English language"

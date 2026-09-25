@@ -55,6 +55,21 @@ def test_fully_specified_config_loads() -> None:
     assert config.languages == ["uk", "en"]
 
 
+def test_topic_article_overrides_are_typed_and_bounded() -> None:
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {
+                "mode": "topic",
+                "value": "learning English",
+                "article_overrides": {"en": ["English language", "English grammar"]},
+            },
+            "languages": ["en"],
+        }
+    )
+
+    assert config.query.article_overrides == {"en": ["English language", "English grammar"]}
+
+
 @pytest.mark.parametrize(
     "payload, expected_message",
     [
@@ -77,6 +92,35 @@ def test_fully_specified_config_loads() -> None:
             "granularity",
         ),
         ({"query": {"mode": "article", "value": "Astronomy"}, "languages": ["uk"], "unexpected": True}, "unexpected"),
+        (
+            {
+                "query": {"mode": "article", "value": "Astronomy", "article_overrides": {"en": ["Astronomy"]}},
+                "languages": ["en"],
+            },
+            "article_overrides",
+        ),
+        (
+            {
+                "query": {
+                    "mode": "topic",
+                    "value": "Astronomy",
+                    "article_overrides": {"en": ["One", "Two", "Three", "Four"]},
+                },
+                "languages": ["en"],
+            },
+            "one to three",
+        ),
+        (
+            {
+                "query": {
+                    "mode": "topic",
+                    "value": "Astronomy",
+                    "article_overrides": {"en": ["Astronomy"]},
+                },
+                "languages": ["uk"],
+            },
+            "not listed in languages",
+        ),
     ],
 )
 def test_invalid_config_is_rejected(payload: dict[str, object], expected_message: str) -> None:

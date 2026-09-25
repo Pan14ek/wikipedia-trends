@@ -36,6 +36,7 @@ class Granularity(StrEnum):
 
 
 LanguageCode = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[a-z][a-z0-9-]*$")]
+ArticleTitle = Annotated[str, Field(min_length=1)]
 
 
 class QueryConfig(BaseModel):
@@ -46,6 +47,28 @@ class QueryConfig(BaseModel):
     mode: QueryMode
     value: str = Field(min_length=1)
     source_language: LanguageCode | None = None
+    article_overrides: dict[LanguageCode, list[ArticleTitle]] = Field(default_factory=dict)
+
+    @field_validator("article_overrides")
+    @classmethod
+    def article_overrides_must_be_nonempty_and_bounded(
+        cls,
+        article_overrides: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        """Require each topic override to name one to three articles."""
+        for language, titles in article_overrides.items():
+            if not 1 <= len(titles) <= 3:
+                raise ValueError(f"article override for '{language}' must contain one to three article titles")
+            if len(titles) != len(set(titles)):
+                raise ValueError(f"article override for '{language}' must not contain duplicate article titles")
+        return article_overrides
+
+    @model_validator(mode="after")
+    def article_overrides_require_topic_mode(self) -> QueryConfig:
+        """Keep article-mode resolution unchanged and topic overrides explicit."""
+        if self.article_overrides and self.mode is not QueryMode.TOPIC:
+            raise ValueError("article_overrides are supported only when query.mode is 'topic'")
+        return self
 
 
 class PeriodConfig(BaseModel):
@@ -107,6 +130,10 @@ class AnalysisConfig(BaseModel):
         """Keep this explicit as a guard when future granularities are introduced."""
         if self.period.granularity is not Granularity.MONTHLY:
             raise ValueError("only monthly granularity is supported")
+        unknown_override_languages = set(self.query.article_overrides) - set(self.languages)
+        if unknown_override_languages:
+            unknown_languages = ", ".join(sorted(unknown_override_languages))
+            raise ValueError(f"article_overrides include language(s) not listed in languages: {unknown_languages}")
         return self
 
 

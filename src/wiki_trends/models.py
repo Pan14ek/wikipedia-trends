@@ -33,6 +33,8 @@ __all__ = [
     "ResolutionMethod",
     "ResolutionStatus",
     "ResolvedArticle",
+    "TopicResolution",
+    "TopicSelectionMethod",
     "YoYMetrics",
     "YoYStatus",
 ]
@@ -463,4 +465,48 @@ class ArticleResolution(BaseModel):
                 raise ValueError("partial results require articles and missing languages without clarification")
         elif self.clarification is None:
             raise ValueError("clarification results require clarification details")
+        return self
+
+
+class TopicSelectionMethod(StrEnum):
+    """The transparent rule used to choose articles for a topic."""
+
+    MEDIAWIKI_SEARCH_RANK_PLUS_TITLE_OVERLAP = "mediawiki_search_rank_plus_title_overlap"
+    EXPLICIT_ARTICLE_OVERRIDE = "explicit_article_override"
+
+
+class TopicResolution(BaseModel):
+    """Selected canonical articles for one topic in one language edition.
+
+    Topic resolution is deliberately language-local. Later multi-language
+    orchestration can collect one of these records per requested edition
+    without implying that titles in different languages are equivalents.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    requested_topic: str = Field(min_length=1)
+    language: str = Field(min_length=1)
+    status: ResolutionStatus
+    selected_articles: list[ResolvedArticle] = Field(default_factory=list, max_length=3)
+    candidate_count: int = Field(ge=0, le=5)
+    selection_method: TopicSelectionMethod
+    clarification: ResolutionClarification | None = None
+
+    @model_validator(mode="after")
+    def validate_status_contents(self) -> TopicResolution:
+        """Keep selected articles and clarification state unambiguous."""
+        if self.status is ResolutionStatus.RESOLVED:
+            if not self.selected_articles or self.clarification is not None:
+                raise ValueError("resolved topic results require selected articles and no clarification")
+            if any(article.language != self.language for article in self.selected_articles):
+                raise ValueError("topic selected articles must match the result language")
+            page_ids = [article.page_id for article in self.selected_articles]
+            if len(page_ids) != len(set(page_ids)):
+                raise ValueError("topic selected articles must not contain duplicate pages")
+        elif self.status is ResolutionStatus.REQUIRES_CLARIFICATION:
+            if self.selected_articles or self.clarification is None:
+                raise ValueError("clarification topic results require details and no selected articles")
+        else:
+            raise ValueError("topic resolution does not support partial status")
         return self

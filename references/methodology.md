@@ -148,3 +148,36 @@ zero-baseline resamples are excluded because their YoY percentage is undefined.
 This interval quantifies variability in the observed monthly series under the
 chosen bootstrap procedure. It is not a confidence interval for total market
 demand, willingness to pay, or causal product opportunity.
+
+## M12 Topic mode
+
+M12 represents a broader topic with a small, inspectable collection of one to
+three canonical articles per requested language edition. It asks that edition's
+MediaWiki search API for up to five namespace-zero results, resolves each title
+through the existing redirect-aware page lookup, excludes disambiguation pages
+and titles explicitly beginning with `List of `, then ranks the remaining
+candidates by title-token overlap with the requested topic plus the supplied
+search rank. Canonical title, URL, page ID, Wikidata ID when present, and
+redirect provenance remain visible for every selected article.
+
+The deterministic ambiguity guard returns `requires_clarification` instead of
+selecting when the two highest-ranked valid candidates have near-equal scores
+and distinct parenthetical meanings, such as `Mercury (planet)` and `Mercury
+(element)`. This is intentionally a transparent string-and-rank rule, not
+semantic topic modeling or hidden LLM selection. A reviewed
+`query.article_overrides` mapping may explicitly name one to three valid
+articles for each configured language and skips search selection altogether.
+
+For a month, topic views are the sum of available selected-article views:
+
+```text
+topic views = sum(available selected article views)
+```
+
+If every selected article is unavailable for a month, the aggregate is
+unknown. If only some are available, the aggregate intentionally retains their
+sum; consumers must retain the per-article series and report that partial-data
+caveat. Topic totals are article pageviews, not unique readers: readers may
+visit more than one selected page, so summed views can include overlapping
+audiences. M12 does not compare language editions, assemble the final JSON
+report, cache responses, or infer a web-scale semantic topic model.

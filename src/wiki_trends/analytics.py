@@ -15,9 +15,58 @@ from wiki_trends.models import (
     YoYStatus,
 )
 
-__all__ = ["compute_absolute_metrics", "compute_yoy_metrics"]
+__all__ = ["aggregate_topic_pageviews", "compute_absolute_metrics", "compute_yoy_metrics"]
 
 _YOY_WINDOW_MONTHS = 12
+
+
+def aggregate_topic_pageviews(article_series: Sequence[Sequence[MonthlyPageview]]) -> list[MonthlyPageview]:
+    """Sum available article views into a transparent topic series.
+
+    Each input sequence represents one selected article. A month is unknown
+    only when every selected article is unavailable for that month. Otherwise
+    its value is the sum of the available article views; callers must retain
+    the per-article series because a partially available month is not a
+    complete audience count.
+
+    Args:
+        article_series: Monthly pageview observations for one to three selected
+            topic articles.
+
+    Returns:
+        Calendar-sorted topic observations without mutating input sequences.
+
+    Raises:
+        ValueError: If no article series are supplied or one contains a
+            duplicate calendar month.
+    """
+    if not article_series:
+        raise ValueError("'article_series' must contain at least one selected article series")
+    if len(article_series) > 3:
+        raise ValueError("'article_series' must contain no more than three selected article series")
+
+    indexed_series = [
+        _index_by_month(series, f"article_series[{index}]") for index, series in enumerate(article_series)
+    ]
+    months = sorted({month for series in indexed_series for month in series})
+    return [_aggregate_topic_month(month, indexed_series) for month in months]
+
+
+def _aggregate_topic_month(
+    month: date,
+    indexed_series: Sequence[dict[date, MonthlyPageview]],
+) -> MonthlyPageview:
+    """Aggregate one calendar month from the available article observations."""
+    available_views = [
+        observation.views
+        for series in indexed_series
+        if (observation := series.get(month)) is not None
+        and observation.status is not ObservationStatus.UNKNOWN
+        and observation.views is not None
+    ]
+    if not available_views:
+        return MonthlyPageview(month=month, status=ObservationStatus.UNKNOWN)
+    return MonthlyPageview(month=month, views=sum(available_views))
 
 
 def compute_absolute_metrics(monthly_pageviews: Sequence[MonthlyPageview]) -> AbsoluteMetrics:
@@ -83,7 +132,7 @@ def compute_yoy_metrics(monthly_pageviews: Sequence[MonthlyPageview]) -> YoYMetr
     Raises:
         ValueError: If the input contains duplicate calendar-month observations.
     """
-    observations_by_month = _index_observations(monthly_pageviews)
+    observations_by_month = _index_by_month(monthly_pageviews, "monthly_pageviews")
     if not observations_by_month:
         return _unavailable_yoy(
             YoYStatus.INSUFFICIENT_DATA,
@@ -134,12 +183,15 @@ def compute_yoy_metrics(monthly_pageviews: Sequence[MonthlyPageview]) -> YoYMetr
     )
 
 
-def _index_observations(monthly_pageviews: Sequence[MonthlyPageview]) -> dict[date, MonthlyPageview]:
+def _index_by_month(
+    monthly_pageviews: Sequence[MonthlyPageview],
+    series_name: str,
+) -> dict[date, MonthlyPageview]:
     """Index observations by calendar month while rejecting ambiguous duplicates."""
     observations_by_month: dict[date, MonthlyPageview] = {}
     for observation in monthly_pageviews:
         if observation.month in observations_by_month:
-            raise ValueError(f"duplicate monthly observation for {observation.month.isoformat()}")
+            raise ValueError(f"'{series_name}' contains duplicate month {observation.month.isoformat()}")
         observations_by_month[observation.month] = observation
     return observations_by_month
 
