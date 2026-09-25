@@ -1,0 +1,23 @@
+{
+  "query": {
+    "mode": "article",
+    "value": "Astronomy"
+  },
+  "languages": ["uk"],
+  "period": {
+    "months": 24,
+    "granularity": "monthly"
+  },
+  "criteria": {
+    "growth": true,
+    "normalized_interest": true,
+    "stability": true,
+    "anomalies": true,
+    "confidence_intervals": true
+  },
+  "output": {
+    "json": true,
+    "charts": true,
+    "pdf": true
+  }
+}

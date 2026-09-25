@@ -8,7 +8,6 @@ from pathlib import Path
 
 import wiki_trends
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
