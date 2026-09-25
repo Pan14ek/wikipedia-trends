@@ -54,7 +54,7 @@ __all__ = [
     "write_analysis_report",
 ]
 
-ANALYSIS_REPORT_SCHEMA_VERSION: Final[Literal["2.0.0"]] = "2.0.0"
+ANALYSIS_REPORT_SCHEMA_VERSION: Final[Literal["2.1.0"]] = "2.1.0"
 _RUN_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _PAGE_WIDTH, _PAGE_HEIGHT = A4
@@ -177,7 +177,7 @@ class AnalysisReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["2.0.0"] = ANALYSIS_REPORT_SCHEMA_VERSION
+    schema_version: Literal["2.1.0"] = ANALYSIS_REPORT_SCHEMA_VERSION
     run: ReportRun
     input: AnalysisConfig
     resolution: ReportResolution

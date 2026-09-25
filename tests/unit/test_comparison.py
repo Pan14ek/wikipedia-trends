@@ -43,6 +43,19 @@ def test_compares_three_languages_using_the_same_shared_period() -> None:
     assert set(result.metrics_by_language) == {"en", "pl", "cs"}
 
 
+def test_non_equivalent_proxy_cannot_be_reported_as_directly_comparable() -> None:
+    source = _input("en", _series(date(2024, 1, 1), 24, 100))
+    proxy = _input("uk", _series(date(2024, 1, 1), 24, 200)).model_copy(update={"comparison_equivalent": False})
+
+    result = compare_languages([source, proxy])
+
+    assert result.comparable is False
+    assert result.normalized_comparable is False
+    assert result.comparison_validity.status is QualityStatus.FAIL
+    assert any("Proxy article mappings" in warning for warning in result.warnings)
+    assert result.metrics_by_language["uk"].absolute_metrics is None
+
+
 def test_daily_comparison_accepts_short_exact_shared_window() -> None:
     days = [date(2026, 8, day) for day in range(1, 8)]
     result = compare_languages(

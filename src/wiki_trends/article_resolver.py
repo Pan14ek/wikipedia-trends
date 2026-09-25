@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import TracebackType
@@ -21,6 +22,8 @@ from wiki_trends.models import (
     ResolutionMethod,
     ResolutionStatus,
     ResolvedArticle,
+    TopicCandidateDecision,
+    TopicCandidateEvidence,
     TopicResolution,
     TopicSelectionMethod,
 )
@@ -30,16 +33,17 @@ __all__ = [
     "ArticleResolver",
     "ArticleResolverError",
     "ArticleResolverUnavailableError",
+    "TopicSourceLanguageRequiredError",
 ]
 
 _DEFAULT_TIMEOUT_SECONDS: Final = 10.0
 _DEFAULT_USER_AGENT: Final = "WikipediaTrends/0.1.0 (https://www.mediawiki.org/wiki/API:Main_page)"
 _LANGUAGE_PATTERN: Final = re.compile(r"^[a-z][a-z0-9-]*$")
 _TITLE_TOKEN_PATTERN: Final = re.compile(r"\w+", re.UNICODE)
+_TOPIC_MIN_TOKEN_COVERAGE: Final = 0.80
 _PARENTHETICAL_QUALIFIER_PATTERN: Final = re.compile(r"\(([^()]+)\)")
 _TOPIC_SEARCH_RESULT_LIMIT: Final = 5
 _TOPIC_SELECTION_LIMIT: Final = 3
-_AMBIGUITY_SCORE_DELTA: Final = 0.2
 
 
 class ArticleResolverError(RuntimeError):
@@ -54,14 +58,23 @@ class ArticleResolverUnavailableError(ArticleResolverError):
     """Raised when a MediaWiki or Wikidata request cannot be completed."""
 
 
+class TopicSourceLanguageRequiredError(ValueError):
+    """Raised before search when a multi-language topic lacks its source language."""
+
+    reason = "source_language_required"
+
+    def __init__(self) -> None:
+        super().__init__("'source_language' is required for multi-language topic resolution")
+
+
 class ArticleResolver:
     """Resolve concrete articles and transparent language-local topic selections.
 
     The resolver keeps all HTTP calls at this boundary. Article mode relies on
     MediaWiki language links and Wikidata sitelinks without translation or
-    heuristic search; topic mode uses the documented MediaWiki-search ranking
-    rule. An injected HTTP client remains owned by its caller, which keeps
-    mocked integration tests deterministic.
+    heuristic search; topic mode accepts deterministic semantic evidence and
+    maps canonical source concepts through Wikidata. An injected HTTP client
+    remains owned by its caller, which keeps mocked integration tests deterministic.
     """
 
     def __init__(
@@ -89,6 +102,8 @@ class ArticleResolver:
         self._user_agent = user_agent
         self._logger = logger or logging.getLogger(__name__)
         self._cache = cache if cache is not None else (None if http_client is not None else FilesystemCache())
+        self._semantic_metadata_cache: dict[tuple[str, str], _SemanticMetadata] = {}
+        self._sitelink_cache: dict[str, Mapping[str, str]] = {}
 
     def __enter__(self) -> ArticleResolver:
         """Enter a context that closes an internally created HTTP client."""
@@ -122,6 +137,8 @@ class ArticleResolver:
             ValueError: If requested languages cannot safely identify a source.
         """
         requested_languages = _validate_languages(languages)
+        if query.mode is QueryMode.TOPIC:
+            _resolve_topic_source_language(query.source_language, requested_languages)
         fields = {
             "languages": requested_languages,
             "operation": "resolve",
@@ -137,7 +154,12 @@ class ArticleResolver:
                 source_language=query.source_language,
             )
         else:
-            result = self.resolve_topic(query.value, requested_languages, article_overrides=query.article_overrides)
+            result = self.resolve_topic(
+                query.value,
+                requested_languages,
+                source_language=query.source_language,
+                article_overrides=query.article_overrides,
+            )
         if self._cache is not None:
             payload = (
                 result.model_dump(mode="json")
@@ -255,14 +277,15 @@ class ArticleResolver:
         requested_topic: str,
         languages: Sequence[str],
         *,
+        source_language: str | None = None,
         article_overrides: Mapping[str, Sequence[str]] | None = None,
     ) -> list[TopicResolution]:
-        """Resolve a topic independently within each requested language edition.
+        """Resolve source concepts once and map them to requested editions.
 
-        Each language uses its own MediaWiki search results. This avoids
-        treating translated titles as equivalent concepts before M13 defines
-        cross-language comparison. Overrides skip search and name the exact
-        one-to-three articles an agent or user has reviewed.
+        For multi-language requests the source language is required. Search
+        runs only in that edition; target editions are resolved by the source
+        concepts' Wikidata sitelinks. Explicit overrides remain reviewable and
+        are marked non-equivalent when their QID set differs.
 
         Raises:
             ValueError: If the topic, languages, or override keys are invalid.
@@ -270,6 +293,7 @@ class ArticleResolver:
         """
         topic = _require_nonblank_text(requested_topic, "requested_topic")
         requested_languages = _validate_languages(languages)
+        source = _resolve_topic_source_language(source_language, requested_languages)
         validated_overrides = _validate_topic_overrides(article_overrides, requested_languages)
         self._logger.info(
             "Resolving Wikipedia topic",
@@ -278,10 +302,68 @@ class ArticleResolver:
                 "override_language_count": len(validated_overrides),
             },
         )
-        resolutions = [
-            self.resolve_topic_language(topic, language, article_override=validated_overrides.get(language))
-            for language in requested_languages
+        source_override = validated_overrides.get(source)
+        source_resolution = self.resolve_topic_language(
+            topic,
+            source,
+            article_override=source_override,
+        )
+        canonical_ids = [
+            article.wikidata_id for article in source_resolution.selected_articles if article.wikidata_id is not None
         ]
+        complete_canonical_set = bool(canonical_ids) and len(canonical_ids) == len(source_resolution.selected_articles)
+        resolutions: list[TopicResolution] = []
+        for language in requested_languages:
+            if language == source:
+                resolutions.append(source_resolution)
+                continue
+            override = validated_overrides.get(language)
+            if source_resolution.status is ResolutionStatus.REQUIRES_CLARIFICATION:
+                resolutions.append(
+                    _topic_clarification(
+                        topic,
+                        language,
+                        source_resolution.candidate_count,
+                        source_resolution.clarification.reason
+                        if source_resolution.clarification
+                        else "source_unresolved",
+                        TopicSelectionMethod.WIKIDATA_SITELINK,
+                        source_language=source,
+                        canonical_concept_ids=canonical_ids,
+                    )
+                )
+            elif override is not None:
+                resolutions.append(
+                    self._resolve_topic_override(
+                        topic,
+                        language,
+                        override,
+                        source_language=source,
+                        canonical_concept_ids=canonical_ids,
+                    )
+                )
+            elif not complete_canonical_set:
+                resolutions.append(
+                    _topic_clarification(
+                        topic,
+                        language,
+                        source_resolution.candidate_count,
+                        "missing_canonical_sitelink",
+                        TopicSelectionMethod.WIKIDATA_SITELINK,
+                        source_language=source,
+                        canonical_concept_ids=canonical_ids,
+                    )
+                )
+            else:
+                resolutions.append(
+                    self._map_topic_concepts(
+                        topic,
+                        language,
+                        source,
+                        source_resolution,
+                        canonical_ids,
+                    )
+                )
         self._logger.info(
             "Wikipedia topic resolution completed",
             extra={
@@ -303,20 +385,25 @@ class ArticleResolver:
         *,
         article_override: Sequence[str] | None = None,
     ) -> TopicResolution:
-        """Resolve one language-local topic through search or reviewed titles."""
+        """Resolve source-language concepts through semantic evidence."""
         topic = _require_nonblank_text(requested_topic, "requested_topic")
         validated_language = _validate_language(language)
         if article_override is not None:
             return self._resolve_topic_override(topic, validated_language, article_override)
 
         search_titles = self._search_titles(validated_language, topic)
-        candidates = self._valid_topic_candidates(topic, validated_language, search_titles)
-        if _topic_candidates_are_ambiguous(candidates):
+        candidates, evidence = self._valid_topic_candidates(topic, validated_language, search_titles)
+        direct_disambiguation = any(
+            item.exact_title_match and item.reason == "disambiguation_page" for item in evidence
+        )
+        if direct_disambiguation or _topic_candidates_are_ambiguous(candidates):
             return _topic_clarification(
                 topic,
                 validated_language,
                 len(search_titles),
-                "ambiguous_topic_candidates",
+                "disambiguation_page" if direct_disambiguation else "ambiguous_topic_candidates",
+                TopicSelectionMethod.MEDIAWIKI_SEMANTIC_EVIDENCE,
+                candidate_evidence=evidence,
             )
         selected_articles = [_resolved_topic_article(candidate) for candidate in candidates[:_TOPIC_SELECTION_LIMIT]]
         if not selected_articles:
@@ -324,7 +411,9 @@ class ArticleResolver:
                 topic,
                 validated_language,
                 len(search_titles),
-                "no_valid_topic_candidates",
+                "insufficient_semantic_evidence",
+                TopicSelectionMethod.MEDIAWIKI_SEMANTIC_EVIDENCE,
+                candidate_evidence=evidence,
             )
         return TopicResolution(
             requested_topic=topic,
@@ -332,7 +421,12 @@ class ArticleResolver:
             status=ResolutionStatus.RESOLVED,
             selected_articles=selected_articles,
             candidate_count=len(search_titles),
-            selection_method=TopicSelectionMethod.MEDIAWIKI_SEARCH_RANK_PLUS_TITLE_OVERLAP,
+            selection_method=TopicSelectionMethod.MEDIAWIKI_SEMANTIC_EVIDENCE,
+            source_language=validated_language,
+            canonical_concept_ids=[
+                article.wikidata_id for article in selected_articles if article.wikidata_id is not None
+            ],
+            candidate_evidence=evidence,
         )
 
     def _resolve_topic_override(
@@ -340,6 +434,9 @@ class ArticleResolver:
         topic: str,
         language: str,
         article_override: Sequence[str],
+        *,
+        source_language: str | None = None,
+        canonical_concept_ids: Sequence[str] = (),
     ) -> TopicResolution:
         """Resolve reviewed topic article titles without hidden search selection."""
         titles = _validate_override_titles(article_override, language)
@@ -370,6 +467,18 @@ class ArticleResolver:
                 "no_valid_topic_candidates",
                 TopicSelectionMethod.EXPLICIT_ARTICLE_OVERRIDE,
             )
+        comparison_equivalent = source_language is None or source_language == language
+        if source_language is not None and source_language != language:
+            override_qids = [article.wikidata_id for article in selected_articles]
+            comparison_equivalent = (
+                bool(canonical_concept_ids)
+                and len(selected_articles) == len(canonical_concept_ids)
+                and all(qid is not None for qid in override_qids)
+                and set(override_qids) == set(canonical_concept_ids)
+            )
+            if comparison_equivalent:
+                articles_by_qid = {article.wikidata_id: article for article in selected_articles}
+                selected_articles = [articles_by_qid[concept_id] for concept_id in canonical_concept_ids]
         return TopicResolution(
             requested_topic=topic,
             language=language,
@@ -377,6 +486,55 @@ class ArticleResolver:
             selected_articles=selected_articles,
             candidate_count=len(titles),
             selection_method=TopicSelectionMethod.EXPLICIT_ARTICLE_OVERRIDE,
+            source_language=source_language or language,
+            canonical_concept_ids=list(canonical_concept_ids),
+            comparison_equivalent=comparison_equivalent,
+        )
+
+    def _map_topic_concepts(
+        self,
+        topic: str,
+        language: str,
+        source_language: str,
+        source_resolution: TopicResolution,
+        canonical_ids: Sequence[str],
+    ) -> TopicResolution:
+        """Resolve every canonical concept by its target-edition sitelink."""
+        selected: list[ResolvedArticle] = []
+        for concept_id in canonical_ids:
+            title = self._get_sitelinks(concept_id).get(f"{language}wiki")
+            if title is None:
+                return _topic_clarification(
+                    topic,
+                    language,
+                    source_resolution.candidate_count,
+                    "missing_canonical_sitelink",
+                    TopicSelectionMethod.WIKIDATA_SITELINK,
+                    source_language=source_language,
+                    canonical_concept_ids=canonical_ids,
+                )
+            page = self._lookup_page(language, title)
+            if page is None or page.wikidata_id != concept_id:
+                return _topic_clarification(
+                    topic,
+                    language,
+                    source_resolution.candidate_count,
+                    "missing_canonical_sitelink",
+                    TopicSelectionMethod.WIKIDATA_SITELINK,
+                    source_language=source_language,
+                    canonical_concept_ids=canonical_ids,
+                )
+            selected.append(_resolved_article_from_page(language, title, page, ResolutionMethod.WIKIDATA_SITELINK))
+        return TopicResolution(
+            requested_topic=topic,
+            language=language,
+            status=ResolutionStatus.RESOLVED,
+            selected_articles=selected,
+            candidate_count=source_resolution.candidate_count,
+            selection_method=TopicSelectionMethod.WIKIDATA_SITELINK,
+            source_language=source_language,
+            canonical_concept_ids=list(canonical_ids),
+            comparison_equivalent=True,
         )
 
     def _search_titles(self, language: str, topic: str) -> list[str]:
@@ -400,30 +558,80 @@ class ArticleResolver:
         topic: str,
         language: str,
         search_titles: Sequence[str],
-    ) -> list[_TopicCandidate]:
-        """Canonicalize, filter, score, and deterministically sort candidates."""
+    ) -> tuple[list[_TopicCandidate], list[TopicCandidateEvidence]]:
+        """Canonicalize candidates and apply deterministic semantic gates."""
         candidates: list[_TopicCandidate] = []
+        evidence: list[TopicCandidateEvidence] = []
         seen_page_ids: set[int] = set()
+        seen_wikidata_ids: set[str] = set()
+        semantic_metadata_by_qid: dict[str, _SemanticMetadata] = {}
         for search_rank, title in enumerate(search_titles, start=1):
             page = self._lookup_page(language, title)
-            if page is None or page.is_disambiguation or _is_detectable_list_page(page.title):
+            if page is None:
                 continue
             if page.page_id in seen_page_ids:
                 continue
+            if page.wikidata_id is not None and page.wikidata_id in seen_wikidata_ids:
+                continue
             seen_page_ids.add(page.page_id)
-            candidates.append(
-                _TopicCandidate(
-                    language=language,
-                    search_rank=search_rank,
-                    requested_title=title,
-                    page=page,
-                    relevance=_topic_relevance(topic, page.title, search_rank),
-                ),
+            if page.wikidata_id is not None:
+                seen_wikidata_ids.add(page.wikidata_id)
+            if page.wikidata_id is None:
+                semantic_metadata = self._get_semantic_metadata(None, language)
+            else:
+                existing_metadata = semantic_metadata_by_qid.get(page.wikidata_id)
+                if existing_metadata is None:
+                    existing_metadata = self._get_semantic_metadata(page.wikidata_id, language)
+                    semantic_metadata_by_qid[page.wikidata_id] = existing_metadata
+                semantic_metadata = existing_metadata
+            candidate_evidence = _topic_candidate_evidence(
+                topic,
+                page,
+                search_rank,
+                semantic_metadata,
             )
-        return sorted(
-            candidates,
-            key=lambda candidate: (-candidate.relevance, candidate.search_rank, candidate.page.title.casefold()),
+            if page.is_disambiguation or _is_detectable_list_page(page.title):
+                reason = "disambiguation_page" if page.is_disambiguation else "non_article_page"
+                candidate_evidence = candidate_evidence.model_copy(
+                    update={"decision": TopicCandidateDecision.REJECTED, "reason": reason}
+                )
+            evidence.append(candidate_evidence)
+            if page.is_disambiguation or _is_detectable_list_page(page.title):
+                continue
+            if candidate_evidence.decision is TopicCandidateDecision.ACCEPTED:
+                candidates.append(_TopicCandidate(language, search_rank, title, page, candidate_evidence))
+        candidates.sort(
+            key=lambda candidate: (
+                not candidate.evidence.exact_title_match,
+                not candidate.evidence.exact_label_match,
+                not candidate.evidence.exact_alias_match,
+                -candidate.evidence.query_token_coverage,
+                candidate.search_rank,
+                normalize_topic_text(candidate.page.title),
+            )
         )
+        return candidates, evidence
+
+    def _get_semantic_metadata(self, wikidata_id: str | None, source_language: str) -> _SemanticMetadata:
+        if wikidata_id is None:
+            return _SemanticMetadata(None, (), (), (), None)
+        cache_key = (wikidata_id, source_language)
+        if cache_key in self._semantic_metadata_cache:
+            return self._semantic_metadata_cache[cache_key]
+        payload = self._get_json(
+            "https://www.wikidata.org/w/api.php",
+            {
+                "action": "wbgetentities",
+                "format": "json",
+                "formatversion": "2",
+                "ids": wikidata_id,
+                "props": "labels|aliases|descriptions",
+                "languages": f"{source_language}|en",
+            },
+        )
+        metadata = _parse_semantic_metadata(payload, wikidata_id, source_language)
+        self._semantic_metadata_cache[cache_key] = metadata
+        return metadata
 
     def _lookup_page(self, language: str, title: str) -> _PageLookup | None:
         payload = self._get_json(
@@ -445,6 +653,8 @@ class ArticleResolver:
     def _get_sitelinks(self, wikidata_id: str | None) -> Mapping[str, str]:
         if wikidata_id is None:
             return {}
+        if wikidata_id in self._sitelink_cache:
+            return self._sitelink_cache[wikidata_id]
         payload = self._get_json(
             "https://www.wikidata.org/w/api.php",
             {
@@ -455,7 +665,9 @@ class ArticleResolver:
                 "props": "sitelinks",
             },
         )
-        return _parse_sitelinks(payload, wikidata_id)
+        sitelinks = _parse_sitelinks(payload, wikidata_id)
+        self._sitelink_cache[wikidata_id] = sitelinks
+        return sitelinks
 
     def _get_json(self, url: str, params: Mapping[str, str]) -> Mapping[str, object]:
         try:
@@ -509,7 +721,18 @@ class _TopicCandidate:
     search_rank: int
     requested_title: str
     page: _PageLookup
-    relevance: float
+    evidence: TopicCandidateEvidence
+
+
+@dataclass(frozen=True)
+class _SemanticMetadata:
+    """Source-language Wikidata text with explicit fallback language."""
+
+    label: str | None
+    aliases: tuple[str, ...]
+    description: tuple[str, ...]
+    metadata_languages: tuple[str, ...]
+    wikidata_id: str | None
 
 
 def _parse_search_titles(payload: Mapping[str, object]) -> list[str]:
@@ -556,13 +779,65 @@ def _validate_override_titles(titles: Sequence[str], language: str) -> tuple[str
     return normalized_titles
 
 
-def _topic_relevance(topic: str, title: str, search_rank: int) -> float:
-    """Score a canonical candidate from title-token overlap and search rank."""
-    topic_tokens = set(_TITLE_TOKEN_PATTERN.findall(topic.casefold()))
-    title_tokens = set(_TITLE_TOKEN_PATTERN.findall(title.casefold()))
-    overlap_ratio = len(topic_tokens & title_tokens) / len(topic_tokens) if topic_tokens else 0.0
-    rank_score = (_TOPIC_SEARCH_RESULT_LIMIT - search_rank + 1) / _TOPIC_SEARCH_RESULT_LIMIT
-    return overlap_ratio + rank_score
+def normalize_topic_text(value: str) -> str:
+    """Normalize lexical evidence deterministically across Unicode text."""
+    normalized = unicodedata.normalize("NFKC", value).casefold().replace("_", " ")
+    normalized = "".join(character if character.isalnum() else " " for character in normalized)
+    return " ".join(normalized.split())
+
+
+def _topic_candidate_evidence(
+    topic: str,
+    page: _PageLookup,
+    search_rank: int,
+    metadata: _SemanticMetadata,
+) -> TopicCandidateEvidence:
+    """Build inspectable evidence and decide through hard semantic gates."""
+    normalized_query = normalize_topic_text(topic)
+    title = normalize_topic_text(page.title)
+    label = normalize_topic_text(metadata.label or "")
+    aliases = {normalize_topic_text(alias) for alias in metadata.aliases}
+    query_tokens = set(_TITLE_TOKEN_PATTERN.findall(normalized_query))
+    semantic_tokens = set(
+        _TITLE_TOKEN_PATTERN.findall(
+            normalize_topic_text(" ".join([page.title, metadata.label or "", *metadata.aliases, *metadata.description]))
+        )
+    )
+    anchor_tokens = set(
+        _TITLE_TOKEN_PATTERN.findall(
+            normalize_topic_text(" ".join([page.title, metadata.label or "", *metadata.aliases]))
+        )
+    )
+    coverage = len(query_tokens & semantic_tokens) / len(query_tokens) if query_tokens else 0.0
+    exact_title = bool(normalized_query) and normalized_query == title
+    exact_label = bool(label) and normalized_query == label
+    exact_alias = normalized_query in aliases
+    lexical_anchor = bool(query_tokens & anchor_tokens)
+    accepted = exact_title or exact_label or exact_alias or (coverage >= _TOPIC_MIN_TOKEN_COVERAGE and lexical_anchor)
+    reason = (
+        "exact_title_match"
+        if exact_title
+        else "exact_label_match"
+        if exact_label
+        else "exact_alias_match"
+        if exact_alias
+        else "token_coverage_and_anchor"
+        if accepted
+        else "insufficient_semantic_evidence"
+    )
+    return TopicCandidateEvidence(
+        canonical_title=page.title,
+        wikidata_id=page.wikidata_id,
+        search_rank=search_rank,
+        exact_title_match=exact_title,
+        exact_label_match=exact_label,
+        exact_alias_match=exact_alias,
+        query_token_coverage=coverage,
+        lexical_anchor=lexical_anchor,
+        metadata_languages=list(metadata.metadata_languages),
+        decision=TopicCandidateDecision.ACCEPTED if accepted else TopicCandidateDecision.REJECTED,
+        reason=reason,
+    )
 
 
 def _topic_candidates_are_ambiguous(candidates: Sequence[_TopicCandidate]) -> bool:
@@ -570,8 +845,6 @@ def _topic_candidates_are_ambiguous(candidates: Sequence[_TopicCandidate]) -> bo
     if len(candidates) < 2:
         return False
     first, second = candidates[0], candidates[1]
-    if first.relevance - second.relevance > _AMBIGUITY_SCORE_DELTA:
-        return False
     first_qualifier = _parenthetical_qualifier(first.page.title)
     second_qualifier = _parenthetical_qualifier(second.page.title)
     return first_qualifier is not None and second_qualifier is not None and first_qualifier != second_qualifier
@@ -582,7 +855,7 @@ def _parenthetical_qualifier(title: str) -> str | None:
     match = _PARENTHETICAL_QUALIFIER_PATTERN.search(title)
     if match is None:
         return None
-    qualifier = match.group(1).strip().casefold()
+    qualifier = normalize_topic_text(match.group(1))
     return qualifier or None
 
 
@@ -591,7 +864,12 @@ def _is_detectable_list_page(title: str) -> bool:
     return title.casefold().startswith("list of ")
 
 
-def _resolved_article_from_page(language: str, requested_title: str, page: _PageLookup) -> ResolvedArticle:
+def _resolved_article_from_page(
+    language: str,
+    requested_title: str,
+    page: _PageLookup,
+    method: ResolutionMethod = ResolutionMethod.INPUT_ARTICLE,
+) -> ResolvedArticle:
     """Expose the canonical article and redirect provenance for one topic page."""
     return ResolvedArticle(
         language=language,
@@ -601,7 +879,7 @@ def _resolved_article_from_page(language: str, requested_title: str, page: _Page
         page_id=page.page_id,
         wikidata_id=page.wikidata_id,
         url=page.url,
-        resolution_method=_resolution_method_for_page(ResolutionMethod.INPUT_ARTICLE, requested_title, page.title),
+        resolution_method=_resolution_method_for_page(method, requested_title, page.title),
     )
 
 
@@ -615,7 +893,11 @@ def _topic_clarification(
     language: str,
     candidate_count: int,
     reason: str,
-    selection_method: TopicSelectionMethod = TopicSelectionMethod.MEDIAWIKI_SEARCH_RANK_PLUS_TITLE_OVERLAP,
+    selection_method: TopicSelectionMethod = TopicSelectionMethod.MEDIAWIKI_SEMANTIC_EVIDENCE,
+    *,
+    source_language: str | None = None,
+    canonical_concept_ids: Sequence[str] = (),
+    candidate_evidence: Sequence[TopicCandidateEvidence] = (),
 ) -> TopicResolution:
     """Construct one structured topic clarification result without selecting pages."""
     return TopicResolution(
@@ -625,6 +907,9 @@ def _topic_clarification(
         candidate_count=candidate_count,
         selection_method=selection_method,
         clarification=ResolutionClarification(language=language, title=topic, reason=reason),
+        source_language=source_language or language,
+        canonical_concept_ids=list(canonical_concept_ids),
+        candidate_evidence=list(candidate_evidence),
     )
 
 
@@ -674,6 +959,56 @@ def _parse_sitelinks(payload: Mapping[str, object], wikidata_id: str) -> Mapping
         title = _require_text(sitelink.get("title"), "Wikidata sitelink has an invalid title")
         parsed_sitelinks[site] = title
     return parsed_sitelinks
+
+
+def _parse_semantic_metadata(
+    payload: Mapping[str, object],
+    wikidata_id: str,
+    source_language: str,
+) -> _SemanticMetadata:
+    """Read source-language labels, aliases, and descriptions with English fallback."""
+    entities = _require_mapping(payload.get("entities"), "Wikidata response must contain entities")
+    entity = _require_mapping(entities.get(wikidata_id), "Wikidata response has no requested entity")
+    used_languages: list[str] = []
+
+    def localized_value(field: str) -> str | None:
+        localized = _optional_mapping(entity.get(field), f"Wikidata entity has invalid {field}")
+        for language in (source_language, "en") if source_language != "en" else ("en",):
+            raw_value = localized.get(language)
+            if raw_value is None:
+                continue
+            value = _require_mapping(raw_value, f"Wikidata {field} entry is invalid").get("value")
+            parsed = _optional_text(value)
+            used_languages.append(language)
+            return parsed
+        return None
+
+    def localized_aliases() -> tuple[str, ...]:
+        aliases_by_language = _optional_mapping(entity.get("aliases"), "Wikidata entity has invalid aliases")
+        for language in (source_language, "en") if source_language != "en" else ("en",):
+            raw_aliases = aliases_by_language.get(language)
+            if raw_aliases is None:
+                continue
+            if not isinstance(raw_aliases, list):
+                raise ArticleResolverError("Wikidata aliases entry is invalid")
+            aliases = tuple(
+                _require_text(
+                    _require_mapping(item, "Wikidata alias is invalid").get("value"), "Wikidata alias is invalid"
+                )
+                for item in raw_aliases
+            )
+            if aliases:
+                used_languages.append(language)
+            return aliases
+        return ()
+
+    return _SemanticMetadata(
+        label=localized_value("labels"),
+        aliases=localized_aliases(),
+        description=(description,) if (description := localized_value("descriptions")) is not None else (),
+        metadata_languages=tuple(dict.fromkeys(used_languages)),
+        wikidata_id=wikidata_id,
+    )
 
 
 def _candidate_for_language(
@@ -737,6 +1072,13 @@ def _resolve_source_language(source_language: str | None, languages: list[str]) 
     if len(languages) == 1:
         return languages[0]
     raise ValueError("'source_language' is required when resolving multiple language editions")
+
+
+def _resolve_topic_source_language(source_language: str | None, languages: list[str]) -> str:
+    """Infer a one-edition topic source or raise a machine-identifiable error."""
+    if source_language is None and len(languages) > 1:
+        raise TopicSourceLanguageRequiredError
+    return _resolve_source_language(source_language, languages)
 
 
 def _validate_languages(languages: Sequence[str]) -> list[str]:

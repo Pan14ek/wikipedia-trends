@@ -22,13 +22,10 @@ _YOY_WINDOW_MONTHS = 12
 
 
 def aggregate_topic_pageviews(article_series: Sequence[Sequence[MonthlyPageview]]) -> list[MonthlyPageview]:
-    """Sum available article views into a transparent topic series.
+    """Sum complete selected-article buckets into a transparent topic series.
 
-    Each input sequence represents one selected article. A month is unknown
-    only when every selected article is unavailable for that month. Otherwise
-    its value is the sum of the available article views; callers must retain
-    the per-article series because a partially available month is not a
-    complete audience count.
+    A bucket is unknown if any selected article is missing or unknown. Known
+    values are summed only when every selected article contributes.
 
     Args:
         article_series: Monthly pageview observations for one to three selected
@@ -63,20 +60,28 @@ def _aggregate_topic_month(
     granularity: Granularity | None,
 ) -> MonthlyPageview:
     """Aggregate one calendar month from the available article observations."""
-    available_views = [
-        observation.views
-        for series in indexed_series
-        if (observation := series.get(month)) is not None
-        and observation.status is not ObservationStatus.UNKNOWN
-        and observation.views is not None
-    ]
-    if not available_views:
+    observations = [series.get(month) for series in indexed_series]
+    if any(
+        observation is None or observation.status is ObservationStatus.UNKNOWN or observation.views is None
+        for observation in observations
+    ):
         return MonthlyPageview(
             month=month,
             granularity=granularity or Granularity.MONTHLY,
             status=ObservationStatus.UNKNOWN,
         )
-    return MonthlyPageview(month=month, granularity=granularity or Granularity.MONTHLY, views=sum(available_views))
+    known_observations = [observation for observation in observations if observation is not None]
+    status = (
+        ObservationStatus.ZERO_INFERRED
+        if all(observation.status is ObservationStatus.ZERO_INFERRED for observation in known_observations)
+        else ObservationStatus.OBSERVED
+    )
+    return MonthlyPageview(
+        month=month,
+        granularity=granularity or Granularity.MONTHLY,
+        views=sum(observation.views or 0 for observation in known_observations),
+        status=status,
+    )
 
 
 def compute_absolute_metrics(monthly_pageviews: Sequence[MonthlyPageview]) -> AbsoluteMetrics:

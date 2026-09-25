@@ -1,0 +1,25 @@
+{
+  "learning_english": {
+    "requested_topic": "learning English",
+    "source_language": "en",
+    "source_title": "English as a second or foreign language",
+    "wikidata_id": "Q130192",
+    "label": "English as a second or foreign language",
+    "aliases": ["English language learning"],
+    "description": "use of English by speakers with different native languages",
+    "target_sitelinks": {
+      "simple": "English as a second language"
+    }
+  },
+  "intermittent_fasting": {
+    "requested_topic": "intermittent fasting",
+    "source_language": "en",
+    "source_title": "Intermittent fasting",
+    "wikidata_id": "Q1666254",
+    "label": "intermittent fasting",
+    "description": "a diet that cycles between a period of fasting and non-fasting",
+    "target_sitelinks": {
+      "cs": "Přerušovaný půst"
+    }
+  }
+}

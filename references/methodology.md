@@ -151,36 +151,48 @@ demand, willingness to pay, or causal product opportunity.
 
 ## M12 Topic mode
 
-M12 represents a broader topic with a small, inspectable collection of one to
-three canonical articles per requested language edition. It asks that edition's
-MediaWiki search API for up to five namespace-zero results, resolves each title
-through the existing redirect-aware page lookup, excludes disambiguation pages
-and titles explicitly beginning with `List of `, then ranks the remaining
-candidates by title-token overlap with the requested topic plus the supplied
-search rank. Canonical title, URL, page ID, Wikidata ID when present, and
-redirect provenance remain visible for every selected article.
+WT-M20 supersedes M12's independent per-language search and rank-plus-title
+overlap selection. Topic mode requires one source language for multi-language
+requests. MediaWiki search in that edition discovers up to five candidates;
+search rank is stored and used only to break ties after semantic acceptance.
+For each candidate the resolver records normalized title, Wikidata label,
+aliases, and description evidence. Lexical normalization uses Unicode NFKC,
+case folding, punctuation-to-space conversion, and Unicode-aware tokens.
+English Wikidata fields are used only when a source-language field is absent,
+and the fallback language is recorded.
 
-The deterministic ambiguity guard returns `requires_clarification` instead of
-selecting when the two highest-ranked valid candidates have near-equal scores
-and distinct parenthetical meanings, such as `Mercury (planet)` and `Mercury
-(element)`. This is intentionally a transparent string-and-rank rule, not
-semantic topic modeling or hidden LLM selection. A reviewed
-`query.article_overrides` mapping may explicitly name one to three valid
-articles for each configured language and skips search selection altogether.
+A candidate passes when the normalized query exactly matches its canonical
+title, Wikidata label, or alias, or when at least 0.80 of unique query tokens
+occur in its semantic text and at least one occurs in its title, label, or
+alias. Disambiguation and detectable list pages cannot be selected. Insufficient
+evidence and materially ambiguous senses return structured clarification; the
+resolver prefers false negatives to weak semantic matches.
 
-For a month, topic views are the sum of available selected-article views:
+Selected source concepts form the canonical set by Wikidata QID. Each requested
+target edition is mapped through those QIDs' Wikidata sitelinks. A missing or
+incorrect sitelink stays unresolved; target-language search is not used as an
+approximate replacement. Candidate decisions, evidence fields, canonical QIDs,
+and mapping status are retained in topic resolution output.
+
+An explicit article override remains available. Overrides whose QID set differs
+from the source concept set are proxies: their language-local metrics describe
+the selected articles and their language is excluded from like-for-like topic
+comparison. The report carries a proxy warning. The agent obtains user approval
+before applying a proxy override.
+
+For a topic bucket, views are summed only if every selected article is known:
 
 ```text
-topic views = sum(available selected article views)
+topic views = sum(all selected article views)
 ```
 
-If every selected article is unavailable for a month, the aggregate is
-unknown. If only some are available, the aggregate intentionally retains their
-sum; consumers must retain the per-article series and report that partial-data
-caveat. Topic totals are article pageviews, not unique readers: readers may
-visit more than one selected page, so summed views can include overlapping
-audiences. M12 does not compare language editions, assemble the final JSON
-report, cache responses, or infer a web-scale semantic topic model.
+If any selected article is unknown or missing for a bucket, the aggregate is
+unknown. A complete known aggregate is zero-inferred only when every component
+is zero-inferred; otherwise it is observed. Topic totals are article pageviews,
+not unique readers: readers may visit more than one selected page, so summed
+views can include overlapping audiences.
+Topic pageviews are not unique users, purchase intent, willingness to pay, or
+country-level demand.
 
 ## M13 Multi-language comparison
 
@@ -199,7 +211,10 @@ minimum, and at least 12 shared known months remain. The comparison-validity
 quality check is `pass`, `warning`, or `fail` using those explicit conditions.
 
 Normalized interest is compared only over the further shared subset where
-every language has a known normalized value. It remains article pageviews per
+every language has a known normalized value. Topic mode uses exactly one
+project-wide pageview series per language edition as its denominator,
+regardless of selected article count. Project provenance appears once per
+project-period-granularity request. Normalized values remain pageviews per
 1,000,000 pageviews for that language's own Wikipedia project; it is not a
 country-level demand measure. No Python calculation ranks languages as a best
 market or emits an opportunity score.

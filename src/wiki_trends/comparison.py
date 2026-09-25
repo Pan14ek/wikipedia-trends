@@ -52,21 +52,29 @@ def compare_languages(language_inputs: Sequence[LanguageComparisonInput]) -> Mul
     _validate_inputs(inputs)
     metrics_by_language = _initial_metrics(inputs)
     resolved_inputs = [item for item in inputs if item.resolved]
+    comparable_inputs = [item for item in resolved_inputs if item.comparison_equivalent]
     warnings = _resolution_warnings(inputs)
+    proxy_languages = [item.language for item in inputs if item.resolved and not item.comparison_equivalent]
+    if proxy_languages:
+        warnings.append(
+            "Proxy article mappings are not QID-equivalent to the source topic and are excluded from direct comparison: "
+            + ", ".join(proxy_languages)
+            + "."
+        )
 
-    shared_months = _shared_available_months(resolved_inputs)
-    requested_shared_months = _shared_requested_months(resolved_inputs)
-    warnings.extend(_period_warnings(resolved_inputs, requested_shared_months, shared_months))
-    granularity = _shared_granularity(resolved_inputs)
+    shared_months = _shared_available_months(comparable_inputs)
+    requested_shared_months = _shared_requested_months(comparable_inputs)
+    warnings.extend(_period_warnings(comparable_inputs, requested_shared_months, shared_months))
+    granularity = _shared_granularity(comparable_inputs)
     minimum_shared = 12 if granularity is Granularity.MONTHLY else 1
     comparable = _is_comparable(inputs, metrics_by_language, shared_months, minimum_shared)
-    normalized_months = _shared_normalized_months(resolved_inputs, shared_months)
+    normalized_months = _shared_normalized_months(comparable_inputs, shared_months)
     normalized_comparable = comparable and bool(normalized_months)
     if comparable and not normalized_comparable:
         warnings.append("Normalized interest is unavailable for at least one language in the effective shared period.")
 
     if shared_months:
-        for item in resolved_inputs:
+        for item in comparable_inputs:
             metrics_by_language[item.language] = _calculated_metrics(item, shared_months, normalized_months)
 
     effective_period = _effective_period(shared_months, granularity)
@@ -196,7 +204,11 @@ def _is_comparable(
     minimum_shared: int,
 ) -> bool:
     """Apply the explicit M13 direct-comparison validity rules."""
-    if any(not item.resolved for item in inputs) or len(shared_months) < minimum_shared:
+    if (
+        any(not item.resolved for item in inputs)
+        or any(not item.comparison_equivalent for item in inputs)
+        or len(shared_months) < minimum_shared
+    ):
         return False
     return all(
         metrics.available_months / metrics.requested_months >= _COMPLETENESS_MINIMUM_THRESHOLD

@@ -1,14 +1,14 @@
 # Output schema
 
-M19 defines the versioned machine-readable report contract. Every JSON report
-has `schema_version: "2.0.0"` and validates against
+WT-M20 updates the versioned machine-readable report contract. Every JSON report
+has `schema_version: "2.1.0"` and validates against
 `wiki_trends.report.AnalysisReport` before it is written.
 
 ## Top-level contract
 
 ```json
 {
-  "schema_version": "2.0.0",
+  "schema_version": "2.1.0",
   "run": {},
   "input": {},
   "resolution": {},
@@ -34,8 +34,11 @@ Pageview and normalized-interest series are timestamped daily or monthly.
 Threshold definitions appear in `criteria`, and every language reports an
 independent `criterion_evaluations` list with `met`, `not_met`, or
 `not_evaluable` status. `resolution`
-contains exactly one article-resolution outcome or a list of language-local
-topic resolutions. `languages` is keyed by the requested language codes and
+contains exactly one article-resolution outcome or a list of topic resolutions.
+Topic resolution records source language, canonical concept QIDs, whether an
+override is QID-equivalent for direct comparison, and typed candidate evidence
+with acceptance or rejection reasons and metadata fallback languages.
+`languages` is keyed by the requested language codes and
 contains the pageview series, available metrics, quality checks, anomalies,
 confidence interval, and limitations for each edition. `comparison` contains
 the M13 output when a multi-language comparison was performed; otherwise it is

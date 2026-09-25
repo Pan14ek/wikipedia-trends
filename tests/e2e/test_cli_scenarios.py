@@ -6,10 +6,12 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 from pypdf import PdfReader
 
 from wiki_trends import cli, pipeline
+from wiki_trends.article_resolver import ArticleResolver
 from wiki_trends.config import AnalysisConfig
 from wiki_trends.models import (
     ArticleResolution,
@@ -100,6 +102,40 @@ class _Pageviews:
         return PageviewsFetchResult(_series(start, end, granularity, views=1_000_000), "network")
 
 
+class _CountingTopicPageviews(_Pageviews):
+    def __init__(self) -> None:
+        self.article_requests: list[str] = []
+        self.project_requests: list[str] = []
+
+    def get_article_pageviews_result(
+        self,
+        project: str,
+        article: str,
+        start: date,
+        end: date,
+        *,
+        granularity: Granularity = Granularity.MONTHLY,
+    ) -> PageviewsFetchResult:
+        self.article_requests.append(article)
+        views_by_article = {
+            "English language": 100,
+            "English as a second or foreign language": 200,
+            "English literature": 300,
+        }
+        return PageviewsFetchResult(_series(start, end, granularity, views=views_by_article[article]), "network")
+
+    def get_project_pageviews_result(
+        self,
+        project: str,
+        start: date,
+        end: date,
+        *,
+        granularity: Granularity = Granularity.MONTHLY,
+    ) -> PageviewsFetchResult:
+        self.project_requests.append(project)
+        return PageviewsFetchResult(_series(start, end, granularity, views=1_000_000), "network")
+
+
 def _series(
     start_date: date,
     end_date: date,
@@ -178,7 +214,7 @@ def test_mocked_pipeline_writes_json_png_and_one_page_pdf(
     report = json.loads(json_path.read_text(encoding="utf-8"))
     AnalysisReport.model_validate(report)
 
-    assert report["schema_version"] == "2.0.0"
+    assert report["schema_version"] == "2.1.0"
     assert set(report["languages"]) == set(languages)
     assert png_path.read_bytes().startswith(b"\x89PNG")
     assert len(PdfReader(pdf_path).pages) == 1
@@ -227,7 +263,7 @@ def test_daily_pipeline_reports_exact_dates_baseline_thresholds_and_artifacts(
     assert json_path is not None and chart_path is not None and pdf_path is not None
     report = json.loads(json_path.read_text(encoding="utf-8"))
 
-    assert report["schema_version"] == "2.0.0"
+    assert report["schema_version"] == "2.1.0"
     assert report["requested_period"] == {
         "start": "2026-08-01",
         "end": "2026-08-07",
@@ -245,3 +281,155 @@ def test_daily_pipeline_reports_exact_dates_baseline_thresholds_and_artifacts(
     assert report["languages"]["uk"]["criterion_evaluations"][1]["status"] == "met"
     assert report["artifacts"]["pdf"] == str(pdf_path)
     assert chart_path.exists() and len(PdfReader(pdf_path).pages) == 1
+
+
+def test_topic_pipeline_uses_real_resolver_and_one_project_denominator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise source search, semantic acceptance, aggregation, and report artifacts."""
+    pages = {
+        "English language": (1, "Q1860"),
+        "English as a second or foreign language": (2, "Q130192"),
+        "English literature": (3, "Q109587623"),
+    }
+    metadata = {
+        "Q1860": ("English", ["English language"], "West Germanic language"),
+        "Q130192": (
+            "English as a second or foreign language",
+            ["English language learning"],
+            "use of English by speakers with different native languages",
+        ),
+        "Q109587623": (
+            "English literature",
+            ["study of English literature"],
+            "discipline that studies English-language literature",
+        ),
+    }
+
+    def wiki_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "en.wikipedia.org" and request.url.params.get("list") == "search":
+            return httpx.Response(200, json={"query": {"search": [{"title": title} for title in pages]}})
+        if request.url.host == "en.wikipedia.org":
+            title = request.url.params["titles"]
+            page_id, qid = pages[title]
+            return httpx.Response(
+                200,
+                json={
+                    "query": {
+                        "pages": [
+                            {
+                                "title": title,
+                                "pageid": page_id,
+                                "fullurl": f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}",
+                                "pageprops": {"wikibase_item": qid},
+                                "langlinks": [],
+                            }
+                        ]
+                    }
+                },
+            )
+        if request.url.host == "www.wikidata.org":
+            qid = request.url.params["ids"]
+            return httpx.Response(
+                200,
+                json={
+                    "entities": {
+                        qid: {
+                            "labels": {"en": {"language": "en", "value": metadata[qid][0]}},
+                            "aliases": {"en": [{"language": "en", "value": alias} for alias in metadata[qid][1]]},
+                            "descriptions": {"en": {"language": "en", "value": metadata[qid][2]}},
+                        }
+                    }
+                },
+            )
+        pytest.fail(f"unexpected resolver request: {request.url}")
+
+    pageviews = _CountingTopicPageviews()
+    monkeypatch.setattr(
+        pipeline,
+        "ArticleResolver",
+        lambda: ArticleResolver(http_client=httpx.Client(transport=httpx.MockTransport(wiki_handler))),
+    )
+    monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", lambda: pageviews)
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "topic", "value": "English", "source_language": "en"},
+            "languages": ["en"],
+            "period": {"start": "2026-07-01", "end": "2026-07-31", "granularity": "monthly"},
+            "criteria": {"normalized_interest": True},
+            "output": {"json": True, "charts": True, "pdf": True},
+        }
+    )
+
+    json_path, chart_path, pdf_path = pipeline.run_analysis(config, tmp_path / "output")
+
+    assert json_path is not None and chart_path is not None and pdf_path is not None
+    report = json.loads(json_path.read_text(encoding="utf-8"))
+    assert report["schema_version"] == "2.1.0"
+    assert pageviews.article_requests == list(pages)
+    assert pageviews.project_requests == ["en.wikipedia"]
+    assert (
+        len([source for source in report["sources"] if source["endpoint_family"] == "wikimedia-pageviews-aggregate"])
+        == 1
+    )
+    assert (
+        len([source for source in report["sources"] if source["endpoint_family"] == "wikimedia-pageviews-per-article"])
+        == 3
+    )
+    assert report["languages"]["en"]["pageviews"][0]["views"] == 600
+    assert report["languages"]["en"]["normalized_interest"]["series"][0]["value"] == pytest.approx(600)
+    assert chart_path.read_bytes().startswith(b"\x89PNG")
+    assert len(PdfReader(pdf_path).pages) == 1
+
+
+def test_ambiguous_topic_stops_before_pageview_collection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A disambiguation result produces clarification without downstream fetches."""
+    pageviews = _CountingTopicPageviews()
+
+    def wiki_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("list") == "search":
+            return httpx.Response(200, json={"query": {"search": [{"title": "Mercury"}]}})
+        return httpx.Response(
+            200,
+            json={
+                "query": {
+                    "pages": [
+                        {
+                            "title": "Mercury",
+                            "pageid": 1,
+                            "fullurl": "https://en.wikipedia.org/wiki/Mercury",
+                            "pageprops": {"disambiguation": ""},
+                            "langlinks": [],
+                        }
+                    ]
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        pipeline,
+        "ArticleResolver",
+        lambda: ArticleResolver(http_client=httpx.Client(transport=httpx.MockTransport(wiki_handler))),
+    )
+    monkeypatch.setattr(pipeline, "WikimediaPageviewsClient", lambda: pageviews)
+    config = AnalysisConfig.model_validate(
+        {
+            "query": {"mode": "topic", "value": "Mercury", "source_language": "en"},
+            "languages": ["en"],
+            "period": {"start": "2026-07-01", "end": "2026-07-31", "granularity": "monthly"},
+            "output": {"json": True, "charts": False, "pdf": False},
+        }
+    )
+
+    json_path, _, _ = pipeline.run_analysis(config, tmp_path / "output")
+
+    assert json_path is not None
+    report = json.loads(json_path.read_text(encoding="utf-8"))
+    assert report["resolution"]["topics"][0]["clarification"]["reason"] == "disambiguation_page"
+    assert pageviews.article_requests == []
+    assert pageviews.project_requests == []
+    assert report["sources"] == []

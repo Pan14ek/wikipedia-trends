@@ -46,6 +46,8 @@ __all__ = [
     "ResolutionStatus",
     "ResolvedArticle",
     "TopicResolution",
+    "TopicCandidateDecision",
+    "TopicCandidateEvidence",
     "TopicSelectionMethod",
     "YoYMetrics",
     "YoYStatus",
@@ -599,16 +601,41 @@ class ArticleResolution(BaseModel):
 class TopicSelectionMethod(StrEnum):
     """The transparent rule used to choose articles for a topic."""
 
-    MEDIAWIKI_SEARCH_RANK_PLUS_TITLE_OVERLAP = "mediawiki_search_rank_plus_title_overlap"
+    MEDIAWIKI_SEMANTIC_EVIDENCE = "mediawiki_semantic_evidence"
     EXPLICIT_ARTICLE_OVERRIDE = "explicit_article_override"
+    WIKIDATA_SITELINK = "wikidata_sitelink"
+
+
+class TopicCandidateDecision(StrEnum):
+    """Deterministic semantic-gate decision for a discovered topic candidate."""
+
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
+class TopicCandidateEvidence(BaseModel):
+    """Inspectable lexical and metadata evidence for one topic candidate."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    canonical_title: str = Field(min_length=1)
+    wikidata_id: str | None = None
+    search_rank: int = Field(ge=1, le=5)
+    exact_title_match: bool
+    exact_label_match: bool
+    exact_alias_match: bool
+    query_token_coverage: float = Field(ge=0, le=1)
+    lexical_anchor: bool
+    metadata_languages: list[str] = Field(default_factory=list)
+    decision: TopicCandidateDecision
+    reason: str = Field(min_length=1)
 
 
 class TopicResolution(BaseModel):
     """Selected canonical articles for one topic in one language edition.
 
-    Topic resolution is deliberately language-local. Later multi-language
-    orchestration can collect one of these records per requested edition
-    without implying that titles in different languages are equivalents.
+    Topic resolution records source concepts and the explicit mapping state
+    for one requested edition.
     """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -620,6 +647,10 @@ class TopicResolution(BaseModel):
     candidate_count: int = Field(ge=0, le=5)
     selection_method: TopicSelectionMethod
     clarification: ResolutionClarification | None = None
+    source_language: str | None = None
+    canonical_concept_ids: list[str] = Field(default_factory=list, max_length=3)
+    comparison_equivalent: bool = True
+    candidate_evidence: list[TopicCandidateEvidence] = Field(default_factory=list, max_length=5)
 
     @model_validator(mode="after")
     def validate_status_contents(self) -> TopicResolution:
@@ -668,6 +699,7 @@ class LanguageComparisonInput(BaseModel):
     pageviews: list[MonthlyPageview] = Field(default_factory=list)
     normalized_interest: NormalizedInterest | None = None
     resolved: bool = True
+    comparison_equivalent: bool = True
     resolution_reason: str | None = None
 
     @model_validator(mode="after")

@@ -23,13 +23,15 @@ article or topic, compare language editions, or create a JSON or PDF report.
    measurable metrics and numeric thresholds. Do not invent a weighted score,
    forecast, or market-demand proxy. If growth is requested without a baseline,
    ask which comparison period to use before running the analysis.
-4. Resolve and check the semantic relevance of the requested subject in every
-   language before creating a configuration. A title is a direct match only
-   when the article is about the requested subject, not merely a related,
-   overlapping, or broader concept. If a language has no direct match or the
-   match is weak or broader, mark that language unresolved, explain the
-   candidate and the mismatch, and ask whether the user approves using it as a
-   proxy. Do not run a cross-language analysis with a proxy before approval.
+4. For topic mode, ask for the source language of the phrase when more than
+   one Wikipedia edition is requested and that language is not clear. The
+   Python resolver owns semantic acceptance: use its structured resolved,
+   rejected, ambiguous, and missing-sitelink outcomes. Do not validate weak
+   candidates yourself or replace a resolver rejection with a direct match.
+   If an explicit proxy is proposed, explain the missing direct mapping and
+   name the proxy article; ask for approval before adding it as an article
+   override. A proxy is measured as the selected article and cannot participate
+   in a like-for-like topic comparison.
 5. Create a JSON configuration matching `examples/` and the validated
    `AnalysisConfig` contract. For a follow-up, treat the previous
    `analysis.json` `input` as the current request state; change only fields the
@@ -64,10 +66,10 @@ article or topic, compare language editions, or create a JSON or PDF report.
   willingness to pay, or proof of market demand.
 - Never invent canonical article titles. Use the resolver's selected article
   records; ask for clarification when resolution is ambiguous.
-- A resolver result is not by itself proof that an article represents the
-  requested subject. For example, a broader article about therapeutic fasting
-  is not a direct match for intermittent fasting. Treat weak or broader
-  candidates as unresolved until the user approves them as proxies.
+- Resolver decisions are the semantic boundary. A clarification or rejected
+  candidate stays unresolved; never manually promote it based on prose
+  reasoning. For example, a broader article about therapeutic fasting is not
+  a direct match for intermittent fasting.
 - When the user approves a proxy, identify it explicitly and limit every
   metric and conclusion to that selected article. Do not present proxy
   pageviews as a measurement of the original topic, and state that the
@@ -83,11 +85,9 @@ article or topic, compare language editions, or create a JSON or PDF report.
 
 ## Relevance regression check
 
-For any requested topic and any set of Wikipedia language editions, check each
-resolved article against the requested subject independently. If one or more
-editions resolve only to weakly related or broader articles while others have
-direct matches, report each affected edition as unresolved and ask whether the
-user approves those candidates as proxies before running the comparison. If
-approved, scope the affected metrics and conclusions to the selected article
-in that language; do not present them as measurements of the original topic or
-as directly equivalent to the other languages.
+For multi-language topic mode, resolve the phrase once in its source language.
+The resolver maps the resulting canonical Wikidata QIDs to each requested
+edition through sitelinks. A missing sitelink remains unresolved; never search
+that target edition for an approximate replacement. Report any explicit proxy
+override as language-local article metrics and preserve its non-comparable
+status in the response.

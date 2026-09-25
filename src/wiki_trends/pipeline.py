@@ -75,12 +75,15 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> tuple[Path | None
         normalized_by_language = {}
         baseline_series_by_language: dict[str, list[MonthlyPageview]] = {}
         sources: list[DataSourceMetadata] = []
+        topic_resolution_by_language = {item.language: item for item in topic_resolutions}
         for language in config.languages:
-            articles = (
-                next((item.selected_articles for item in topic_resolutions if item.language == language), [])
-                if topic_mode
-                else [item for item in cast(ArticleResolution, article_resolution).articles if item.language == language]
-            )
+            if topic_mode:
+                topic_resolution = topic_resolution_by_language.get(language)
+                articles = topic_resolution.selected_articles if topic_resolution is not None else []
+            else:
+                articles = [
+                    item for item in cast(ArticleResolution, article_resolution).articles if item.language == language
+                ]
             if not articles:
                 language_series[language] = []
                 continue
@@ -120,33 +123,25 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> tuple[Path | None
                 criterion.metric is CriterionMetric.NORMALIZED_INTEREST_MEAN for criterion in config.thresholds
             )
             if needs_normalized:
-                project_results = [
-                    pageviews_client.get_project_pageviews_result(
-                        article.project,
-                        collection_start,
-                        collection_end,
-                        granularity=granularity,
-                    )
-                    for article in articles
-                ]
-                project_series = (
-                    aggregate_topic_pageviews([result.observations for result in project_results])
-                    if topic_mode
-                    else project_results[0].observations
+                project = articles[0].project
+                project_result = pageviews_client.get_project_pageviews_result(
+                    project,
+                    collection_start,
+                    collection_end,
+                    granularity=granularity,
                 )
-                normalized_by_language[language] = compute_normalized_interest(series, project_series)
-                sources.extend(
+                normalized_by_language[language] = compute_normalized_interest(series, project_result.observations)
+                sources.append(
                     DataSourceMetadata(
                         endpoint_family="wikimedia-pageviews-aggregate",
-                        project=article.project,
+                        project=project,
                         requested_period=period,
                         fetched_at=datetime.now(UTC),
                         access="all-access",
                         agent="user",
                         granularity=granularity,
-                        retrieval=result.retrieval,
+                        retrieval=project_result.retrieval,
                     )
-                    for article, result in zip(articles, project_results, strict=True)
                 )
             sources.extend(
                 DataSourceMetadata(
@@ -191,7 +186,11 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> tuple[Path | None
             ),
             quality=evaluate_quality(series, yoy_metrics=yoy).checks if series else [],
             criterion_evaluations=_evaluate_thresholds(config, absolute, normalized, period_growth.get(language)),
-            warnings=[] if series else ["No resolved article is available."],
+            warnings=(
+                _topic_language_warnings(topic_resolution_by_language.get(language), bool(series))
+                if topic_mode
+                else ([] if series else ["No resolved article is available."])
+            ),
         )
     comparison = (
         compare_languages(
@@ -201,6 +200,11 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> tuple[Path | None
                     pageviews=series,
                     normalized_interest=normalized_by_language.get(language),
                     resolved=bool(series),
+                    comparison_equivalent=(
+                        topic_resolution_by_language[language].comparison_equivalent
+                        if topic_mode and language in topic_resolution_by_language
+                        else not topic_mode
+                    ),
                     resolution_reason=None if series else "unresolved",
                 )
                 for language, series in language_series.items()
@@ -211,7 +215,7 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> tuple[Path | None
     )
     slug = create_run_slug(period, config)
     report = AnalysisReport(
-        run=ReportRun(slug=slug, generated_at=datetime.now(UTC), methodology_version="2.0"),
+        run=ReportRun(slug=slug, generated_at=datetime.now(UTC), methodology_version="2.1"),
         input=normalized_config,
         resolution=resolution,
         sources=sources,
@@ -240,7 +244,11 @@ def run_analysis(config: AnalysisConfig, output_root: Path) -> tuple[Path | None
     json_path = write_analysis_report(report, output_root) if config.output.json_output else None
     _LOGGER.info(
         "analysis completed",
-        extra={"languages": len(config.languages), "granularity": granularity.value, "artifacts": 1 + int(chart_path is not None) + int(pdf_path is not None)},
+        extra={
+            "languages": len(config.languages),
+            "granularity": granularity.value,
+            "artifacts": 1 + int(chart_path is not None) + int(pdf_path is not None),
+        },
     )
     return json_path, chart_path if config.output.charts else None, pdf_path
 
@@ -258,6 +266,19 @@ def _available_window(start: date, end: date, granularity: Granularity) -> tuple
     if available_end < start:
         raise ValueError("the requested period contains no complete monthly observations yet")
     return start, available_end
+
+
+def _topic_language_warnings(resolution: TopicResolution | None, has_series: bool) -> list[str]:
+    """Expose clarification and proxy state beside language-local metrics."""
+    if resolution is None or not has_series:
+        reason = resolution.clarification.reason if resolution and resolution.clarification else "unresolved"
+        return [f"Topic representation requires clarification ({reason}); no pageview analysis was collected."]
+    if resolution.selection_method.value == "explicit_article_override" and not resolution.comparison_equivalent:
+        titles = ", ".join(article.canonical_title for article in resolution.selected_articles)
+        return [
+            f"Explicit proxy override ({titles}) has a different Wikidata concept set; metrics describe the selected articles only."
+        ]
+    return []
 
 
 def _report_baseline(config: AnalysisConfig) -> ReportPeriod | None:

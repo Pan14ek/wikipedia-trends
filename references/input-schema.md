@@ -21,10 +21,10 @@ at every level.
 ```
 
 `query.mode` is either `article` or `topic`; `query.value` is a non-empty
-trimmed string. `query.source_language` is optional and is used by M04 article
-resolution. It is required when resolving an article into multiple language
-editions, since the resolver must not guess which language edition owns a title.
-For one requested language it is inferred from that language. For
+trimmed string. `query.source_language` is used by article and topic resolution.
+It is required for multi-language requests, since the resolver must not guess
+which language edition owns a title or topic phrase. For one requested
+language it is inferred from that language. For
 `query.mode = "topic"`, `query.article_overrides` can replace MediaWiki search
 selection for reviewed languages. It is an optional object keyed by a language
 included in `languages`; each key supplies one to three unique, non-empty
@@ -43,7 +43,11 @@ article titles:
 }
 ```
 
-Article overrides are rejected for article mode. `languages` contains one to
+An override is a reviewed article selection. In multi-language topic mode the
+resolver compares its Wikidata QID set with the source concept set; a different
+set is reported as a proxy and excluded from direct comparison. The agent must
+obtain user approval before supplying a proxy override. Article overrides are
+rejected for article mode. `languages` contains one to
 20 unique lowercase codes.
 Legacy `period.months` accepts 1 through 120 and defaults to 24 complete
 months. Alternatively, specify ISO `start` and `end` dates (both inclusive):
