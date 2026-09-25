@@ -1,93 +1,136 @@
 ---
 name: wikipedia-trends
-description: Analyze Wikipedia pageview trends across topics and language editions, create charts, and generate concise reports.
+description: >
+  Analyze Wikipedia pageview interest for an article or topic over time,
+  compare Wikipedia language editions, evaluate explicit numeric criteria,
+  and generate reproducible JSON, PNG, or one-page PDF reports. Use for
+  Wikipedia pageview trend analysis and follow-up comparisons. Do not use
+  Wikipedia pageviews as proof of market demand, country demand, willingness
+  to pay, or purchase intent.
 ---
 
-# Wikipedia Trends analysis skill
+# Wikipedia Trends
 
-Use this skill when a user asks to analyze Wikipedia pageview interest by
-article or topic, compare language editions, or create a JSON or PDF report.
+## Purpose
 
-## Workflow
+Use the project CLI to analyze Wikipedia pageview attention over time and
+produce the requested report artifacts. Python owns resolution, calculations,
+and report data; the agent routes the request, builds a validated config,
+interprets the recorded results, and explains their limits.
 
-1. Clarify the subject when it could identify unrelated concepts, such as
-   “Java”. Ask which meaning the user intends before choosing article titles.
-2. Collect the requested Wikipedia language editions, period, and granularity.
-   Accept ISO start/end dates and treat boundaries as inclusive. “Last month”
-   means the previous completed calendar month. Use daily buckets for partial
-   calendar-month windows and monthly buckets for full calendar months unless
-   the user explicitly requests another supported granularity. Use 24 complete
-   months when no period is specified. If the requested end is not yet
-   available, let the CLI report both requested and available windows.
-3. If the user asks whether a topic meets a definition of “promising”, ask for
-   measurable metrics and numeric thresholds. Do not invent a weighted score,
-   forecast, or market-demand proxy. If growth is requested without a baseline,
-   ask which comparison period to use before running the analysis.
-4. For topic mode, ask for the source language of the phrase when more than
-   one Wikipedia edition is requested and that language is not clear. The
-   Python resolver owns semantic acceptance: use its structured resolved,
-   rejected, ambiguous, and missing-sitelink outcomes. Do not validate weak
-   candidates yourself or replace a resolver rejection with a direct match.
-   If an explicit proxy is proposed, explain the missing direct mapping and
-   name the proxy article; ask for approval before adding it as an article
-   override. A proxy is measured as the selected article and cannot participate
-   in a like-for-like topic comparison.
-5. Create a JSON configuration matching `examples/` and the validated
-   `AnalysisConfig` contract. For a follow-up, treat the previous
-   `analysis.json` `input` as the current request state; change only fields the
-   user clarified, and preserve the exact dates already recorded. Never
-   silently re-resolve “last month” or another relative period to a newer
-   window during a follow-up.
-6. Run the project CLI for every analysis:
+## When to Use
 
-   ```bash
-   python scripts/analyze.py --config <config.json> --output-dir <output-dir>
-   ```
+Use this skill when the user wants to analyze an article or broader topic,
+compare Wikipedia language editions, inspect pageview metrics or explicit
+numeric criteria, create JSON/charts/PDF, or refine a previous analysis.
+Users do not need to know internal metric or config names.
 
-   If `python` is not available in the shell and the repository virtual
-   environment exists, use `.venv/bin/python` with the same arguments.
+## When Not to Use
 
-   Direct Wikimedia API calls are not a substitute for the CLI workflow.
-7. Before describing results, validate and inspect the CLI-produced
-   `analysis.json`; verify that each requested/configured chart and PDF exists
-   at the exact CLI-reported path, and that a requested PDF is readable. If an
-   artifact is missing or invalid, report the failure instead of claiming it
-   was created. Surface working paths for every artifact.
-8. Preserve warnings, quality failures, unresolved languages, unavailable
-   metrics, and comparison limitations in the response.
+Do not use Wikipedia pageviews as the primary method to estimate market size,
+revenue, country demand, willingness to pay, purchase intent, or future
+popularity. Do not use this skill for general web trends when the requested
+source is not Wikipedia. For mixed requests, provide only the Wikipedia
+evidence component and state what it can support.
 
-## Interpretation rules
+## Non-Negotiable Rules
 
-- Never calculate or estimate metrics in prose. Use only the Python-generated
-  `analysis.json`; quote unavailable values as unavailable.
-- Report interest in a language edition of Wikipedia. Do not infer country
-  demand from the language edition.
-- Pageviews are attention signals. Never describe them as purchase intent,
-  willingness to pay, or proof of market demand.
-- Never invent canonical article titles. Use the resolver's selected article
-  records; ask for clarification when resolution is ambiguous.
-- Resolver decisions are the semantic boundary. A clarification or rejected
-  candidate stays unresolved; never manually promote it based on prose
-  reasoning. For example, a broader article about therapeutic fasting is not
-  a direct match for intermittent fasting.
-- When the user approves a proxy, identify it explicitly and limit every
-  metric and conclusion to that selected article. Do not present proxy
-  pageviews as a measurement of the original topic, and state that the
-  cross-language comparison is not a like-for-like topic comparison.
-- For follow-ups, change only the requested configuration fields, then rerun
-  the CLI and report the newly generated artifacts.
-- The report's requested period and available period are distinct. Describe
-  the available window when data is truncated; do not fill unavailable days or
-  months with estimated values.
-- Treat each configured threshold independently using its recorded
-  `met`/`not_met`/`not_evaluable` result. A non-evaluable threshold is not a
-  failure or a pass.
+- Run every analysis through the project CLI; direct Wikimedia API calls are
+  not an alternate analysis path.
+- Never calculate or estimate metrics manually. Use Python-generated results.
+- Never invent canonical article titles or silently choose between materially
+  different concepts.
+- In topic mode, Python's resolver is the semantic authority. Never promote a
+  rejected candidate or decide QID equivalence yourself.
+- For topic mappings, use canonical source concepts and Wikidata QID sitelinks.
+  A missing canonical sitelink stays unresolved; do not search for an
+  approximate target-language replacement.
+- Never treat `UNKNOWN` as zero or hide unresolved languages, warnings, failed
+  quality checks, unavailable metrics, or invalid comparisons.
+- Keep a proxy's language-local metrics distinct from like-for-like evidence
+  whenever `comparison_equivalent = false`; obtain explicit approval before
+  adding a proposed proxy override.
+- Do not infer country demand from a Wikipedia language edition or describe
+  pageviews as unique people, purchase intent, willingness to pay, or proof of
+  market demand.
+- Do not invent a threshold or explicit comparison baseline. Standard monthly
+  YoY analysis does not require `comparison_period`; an explicit `growth_pct`
+  threshold does.
+- For follow-ups, change only explicitly requested fields and preserve the
+  previous report's frozen dates unless the user changes the period.
+- Validate requested/generated artifacts before claiming they exist.
 
-## Relevance regression check
+## Preflight
 
-For multi-language topic mode, resolve the phrase once in its source language.
-The resolver maps the resulting canonical Wikidata QIDs to each requested
-edition through sitelinks. A missing sitelink remains unresolved; never search
-that target edition for an approximate replacement. Report any explicit proxy
-override as language-local article metrics and preserve its non-comparable
-status in the response.
+Before creating a config, determine whether the subject, article/topic mode,
+requested language editions, required source language, period and granularity,
+explicit thresholds and any required baseline, proxy approval, and requested
+outputs are known or safely defaultable. Apply documented defaults rather than
+asking for values the user did not need to specify. Read
+[`input-schema.md`](references/input-schema.md) when building or changing a
+config.
+
+## Choose a Workflow
+
+Read only the workflow references relevant to the current request. A request
+may require several workflows; apply them together and do not load unrelated
+references.
+
+| User intent / situation | Workflow |
+|---|---|
+| Analyze one specific Wikipedia article | [`article-analysis.md`](references/workflows/article-analysis.md) |
+| Analyze a broader topic represented by one or more articles | [`topic-analysis.md`](references/workflows/topic-analysis.md) |
+| Compare multiple Wikipedia language editions | [`multi-language-comparison.md`](references/workflows/multi-language-comparison.md) |
+| Use exact dates, relative periods, or choose granularity | [`period-selection.md`](references/workflows/period-selection.md) |
+| Evaluate growth, thresholds, or explicit measurable criteria | [`criteria-and-thresholds.md`](references/workflows/criteria-and-thresholds.md) |
+| Modify a previous analysis while preserving unchanged parameters | [`follow-up-analysis.md`](references/workflows/follow-up-analysis.md) |
+| Handle a missing direct equivalent or user-approved proxy | [`proxy-resolution.md`](references/workflows/proxy-resolution.md) |
+| Validate JSON, charts, and PDF before returning results | [`artifact-validation.md`](references/workflows/artifact-validation.md) |
+
+## Run the Analysis
+
+Build a config that matches the input contract and run:
+
+```bash
+python scripts/analyze.py --config <config.json> --output-dir <output-dir>
+```
+
+If `python` is unavailable and the repository virtual environment exists, use
+`.venv/bin/python` with the same arguments. Do not reconstruct results after a
+CLI failure. Before returning a completed analysis, load and follow
+[`artifact-validation.md`](references/workflows/artifact-validation.md).
+
+## Stop and Clarify
+
+Stop before running when a material concept is ambiguous, a required source
+language is unknown, the resolver requires clarification, an explicit
+`growth_pct` threshold lacks an unambiguous baseline, or a proposed proxy lacks
+approval. Keep a missing canonical sitelink unresolved unless the user
+explicitly approves using a proxy. Report CLI or artifact failures directly;
+never replace missing evidence with agent judgment.
+
+## Interpret the Result
+
+Use recorded Python output and preserve its statuses. Requested and available
+periods are distinct. A not-evaluable criterion is neither a pass nor a
+failure. A language edition describes readership of that Wikipedia edition,
+not a country. Pageviews count page visits, and topic sums may include repeated
+or overlapping readers. Do not turn pageviews into demand, intent, a forecast,
+or a composite opportunity score. See [`methodology.md`](references/methodology.md)
+for metric definitions and limits.
+
+## Output Contract
+
+Return a concise summary of the subject and mode, language edition(s),
+requested/effective period as relevant, Python-generated findings, material
+resolution/quality/comparison caveats, and verified paths for requested
+artifacts. Follow the artifact workflow when JSON is disabled; do not assume
+`analysis.json` exists.
+
+## References
+
+| Need | Reference |
+|---|---|
+| Build or modify an analysis config | [`input-schema.md`](references/input-schema.md) |
+| Read or validate `analysis.json` | [`output-schema.md`](references/output-schema.md) |
+| Explain metrics, resolution, quality, or interpretation limits | [`methodology.md`](references/methodology.md) |
