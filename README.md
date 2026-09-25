@@ -22,4 +22,5 @@ detection, bootstrap YoY confidence intervals, and transparent topic-mode
 article selection and aggregation, multi-language comparison, and comparison
 charts, and a versioned JSON report contract. The CLI remains an M02 validation
 placeholder; assembled analyses and caching remain out of scope until later
-milestones.
+milestones. A structured report can also be rendered as a one-page A4 PDF from
+its existing metrics and chart, without recalculation.

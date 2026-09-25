@@ -209,3 +209,18 @@ The caller supplies a subject-and-period title. Up to six languages render in
 one chart with a required legend; seven through twenty use separate
 per-language PNGs to avoid an unreadable shared legend. Final JSON-report
 assembly and PDF reporting remain deferred to later milestones.
+
+## M15 One-page PDF report
+
+M15 presents an already validated M14 `AnalysisReport` in a single A4 PDF. It
+does not fetch data, recalculate metrics, normalize values, or infer a
+recommendation. The PDF uses the existing main PNG trend chart and copies the
+report's supplied absolute and YoY metrics, quality findings, warnings,
+methodology version, and generation date.
+
+For every requested language, the document describes interest in that
+language's Wikipedia edition. It does not equate pageviews with demand,
+willingness to pay, country-level interest, or a product opportunity. Explicit
+report warnings, non-passing quality findings, and invalid cross-language
+comparison status appear in the reliability section. Detailed warnings remain
+in `analysis.json` when the PDF's bounded one-page layout truncates text.
