@@ -21,3 +21,4 @@ Implementation order:
 - [M17 — End-to-End MVP Scenarios](M17-e2e-scenarios.md)
 - [M18 — Agent Evaluation on an Inexpensive Model](M18-agent-evaluation.md)
 - [M19 — Flexible Periods, Criteria, and Follow-up State](M19-flexible-periods-criteria-followups.md)
+- [M20 — Topic Mode Correctness Remediation](M20-topic-mode-correctness-remediation.md)
