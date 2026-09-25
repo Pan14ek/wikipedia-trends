@@ -241,3 +241,23 @@ file followed by replacement. Cache read/write errors, malformed JSON, invalid
 payloads, and stale entries are ignored so a live request can refill the cache.
 When collection uses the provenance-aware pageview API, its `retrieval` value
 is `network` or `cache` and can be copied directly to M14 source metadata.
+
+## M19 Flexible windows and criteria
+
+Analysis periods use inclusive ISO calendar dates. Legacy `period.months`
+remains valid and resolves relative to the run date as complete calendar
+months, with 24 as the default. “Last month” is the preceding completed
+calendar month. Explicit partial-month ranges use daily observations by default;
+full calendar-month windows use monthly observations. Daily requests are capped
+at yesterday, and monthly requests exclude the current partial month. The
+schema-v2 report records the full requested period separately from the
+available period; unavailable observations remain unknown and are not
+extrapolated.
+
+Growth thresholds compare the selected period with an explicit, equal-length
+preceding baseline of the same granularity. A zero baseline has no defined
+growth percentage. User thresholds are evaluated independently in Python and
+reported as `met`, `not_met`, or `not_evaluable`; no composite score or
+forecast is produced. Follow-up analyses should start from the previous report
+`input`, which stores the relative window resolved to exact dates, and change
+only the user's clarified fields.

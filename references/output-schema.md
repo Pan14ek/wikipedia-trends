@@ -1,19 +1,22 @@
 # Output schema
 
-M14 defines the versioned machine-readable report contract. Every JSON report
-has `schema_version: "1.0.0"` and validates against
+M19 defines the versioned machine-readable report contract. Every JSON report
+has `schema_version: "2.0.0"` and validates against
 `wiki_trends.report.AnalysisReport` before it is written.
 
 ## Top-level contract
 
 ```json
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "run": {},
   "input": {},
   "resolution": {},
   "sources": [],
   "period": {},
+  "requested_period": {},
+  "comparison_period": null,
+  "criteria": [],
   "languages": {},
   "comparison": null,
   "quality": [],
@@ -22,7 +25,15 @@ has `schema_version: "1.0.0"` and validates against
 }
 ```
 
-`input` is the normalized `AnalysisConfig` supplied to the run. `resolution`
+`input` is the resolved `AnalysisConfig` supplied to the run. Relative periods
+are frozen into exact dates, so follow-up requests can preserve the original
+window. `requested_period` records the full intended inclusive dates;
+`period` records the actually available inclusive dates. Both include their
+granularity. `comparison_period` is the explicit baseline when configured.
+Pageview and normalized-interest series are timestamped daily or monthly.
+Threshold definitions appear in `criteria`, and every language reports an
+independent `criterion_evaluations` list with `met`, `not_met`, or
+`not_evaluable` status. `resolution`
 contains exactly one article-resolution outcome or a list of language-local
 topic resolutions. `languages` is keyed by the requested language codes and
 contains the pageview series, available metrics, quality checks, anomalies,

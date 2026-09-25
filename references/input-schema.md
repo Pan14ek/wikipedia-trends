@@ -1,6 +1,7 @@
 # Input schema
 
-M02 defines the version-one JSON input contract. Unknown fields are rejected
+The current JSON input contract accepts both legacy month counts and explicit
+inclusive date windows. Unknown fields are rejected
 at every level.
 
 ```json
@@ -44,12 +45,38 @@ article titles:
 
 Article overrides are rejected for article mode. `languages` contains one to
 20 unique lowercase codes.
-`period.months` is an integer from 12 through 120 and defaults to 24.
-Only monthly granularity is supported. The `period`, `criteria`, and `output`
-objects can be omitted; their defaults are shown above.
+Legacy `period.months` accepts 1 through 120 and defaults to 24 complete
+months. Alternatively, specify ISO `start` and `end` dates (both inclusive):
 
-The period is the latest N complete calendar months. The current, incomplete
-month is excluded. A valid configuration can be checked with:
+```json
+{
+  "period": {"start": "2026-08-01", "end": "2026-08-07"},
+  "comparison_period": {
+    "start": "2026-07-25", "end": "2026-07-31", "granularity": "daily"
+  },
+  "thresholds": [
+    {"name": "traffic floor", "metric": "normalized_interest_mean", "operator": "gte", "threshold": 25}
+  ]
+}
+```
+
+Partial calendar-month date windows default to `daily`; full calendar-month
+windows default to `monthly`. Set `granularity` to override that inference.
+`months` cannot be combined with explicit dates. “Last month” is resolved by
+the agent to the previous complete calendar month before config creation.
+Monthly metrics use monthly buckets. Exact date windows require full-day
+boundaries for monthly granularity. Growth thresholds require an explicit,
+equal-length `comparison_period` of matching granularity that ends before the
+analysis window. Thresholds support `growth_pct`, `normalized_interest_mean`,
+and `completeness_ratio`, with `gt`, `gte`, `lt`, or `lte` operators.
+
+The `period`, `criteria`, and `output` objects can be omitted; their defaults
+are shown above.
+
+Legacy month counts resolve to the latest N complete calendar months. Daily
+requests are capped at yesterday if the final requested day is not yet
+complete, and the output records requested and available dates separately. A
+valid configuration can be checked with:
 
 ```bash
 python scripts/analyze.py --config examples/astronomy-uk.json
