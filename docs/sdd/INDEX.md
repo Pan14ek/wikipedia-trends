@@ -24,3 +24,4 @@ Implementation order:
 - [M20 — Topic Mode Correctness Remediation](M20-topic-mode-correctness-remediation.md)
 - [M21 — SKILL Orchestration and Workflow References](M21-skill-orchestration-workflow-references.md)
 - [M22 — Agent-Friendly CLI Contract and Execution Lifecycle](M22-agent-friendly-cli-contract-and-execution-lifecycle.md)
+- [M22.1 — Documentation and Status Synchronization](M22.1-documentation-status-synchronization.md)

@@ -29,7 +29,9 @@ one-page A4 PDF.
 python scripts/analyze.py --config analysis.json --output-dir output
 ```
 
-The command writes a versioned JSON report, PNG trend chart, and one-page PDF.
+Depending on the output configuration, the command can generate a versioned
+JSON report, one or more PNG charts, and/or a one-page PDF; each output type is
+optional.
 The default test suite uses mocked HTTP only. A live run is optional and uses
 Wikimedia endpoints and the local cache; do not treat live network results as
 deterministic CI evidence.

@@ -3,7 +3,7 @@
 **Spec ID:** WT-M21  
 **Project:** Wikipedia Trends Agent Skill  
 **Method:** Specification-Driven Development (SDD)  
-**Status:** Ready for implementation  
+**Status:** Implemented — awaiting WT-M18 revalidation
 **Depends on:** WT-M20  
 **Revalidation after completion:** WT-M18 agent evaluation
 
