@@ -1,4 +1,4 @@
-"""Command-line interface for validating analysis configurations."""
+"""Command-line interface for complete Wikipedia Trends analyses."""
 
 from __future__ import annotations
 
@@ -9,24 +9,28 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from wiki_trends.config import complete_month_range, load_config
+from wiki_trends.config import load_config
+from wiki_trends.pipeline import run_analysis
 
 __all__ = ["build_parser", "main"]
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Create the M02 CLI parser."""
-    parser = argparse.ArgumentParser(description="Validate a Wikipedia pageview trend analysis configuration.")
+    """Create the M17 CLI parser."""
+    parser = argparse.ArgumentParser(
+        description="Generate Wikipedia Trends analysis artifacts from a JSON configuration."
+    )
     parser.add_argument(
         "--config",
         metavar="FILE",
         help="Path to an analysis configuration JSON file.",
     )
+    parser.add_argument("--output-dir", default="output", help="Directory for generated analysis artifacts.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Validate a config and print a machine-readable M02 placeholder result."""
+    """Run one validated configuration through the M17 artifact pipeline."""
     args = build_parser().parse_args(argv)
     if args.config is None:
         build_parser().error("--config is required")
@@ -37,19 +41,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2
 
-    start_month, end_month = complete_month_range(config.period.months)
-    result = {
-        "schema_version": "1.0",
-        "status": "validated",
-        "config_path": str(Path(args.config)),
-        "query": config.query.model_dump(mode="json"),
-        "languages": config.languages,
-        "period": {
-            **config.period.model_dump(mode="json"),
-            "start_month": start_month.isoformat(),
-            "end_month": end_month.isoformat(),
-        },
-        "message": "Configuration is valid. Data collection is not implemented in M02.",
-    }
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    try:
+        json_path, chart_path, pdf_path = run_analysis(config, Path(args.output_dir))
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"Analysis error: {error}", file=sys.stderr)
+        return 1
+    print(
+        json.dumps(
+            {"analysis_json": str(json_path), "chart": str(chart_path), "pdf": str(pdf_path)}, ensure_ascii=False
+        )
+    )
     return 0
