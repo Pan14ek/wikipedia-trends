@@ -10,7 +10,9 @@ from types import TracebackType
 from typing import Final
 
 import httpx
+from pydantic import ValidationError
 
+from wiki_trends.cache import CacheNamespace, FilesystemCache, resolution_ttl
 from wiki_trends.config import QueryConfig, QueryMode
 from wiki_trends.models import (
     ArticleResolution,
@@ -69,6 +71,7 @@ class ArticleResolver:
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
         user_agent: str = _DEFAULT_USER_AGENT,
         logger: logging.Logger | None = None,
+        cache: FilesystemCache | None = None,
     ) -> None:
         """Initialize the resolver's HTTP boundary.
 
@@ -85,6 +88,7 @@ class ArticleResolver:
         self._timeout_seconds = timeout_seconds
         self._user_agent = user_agent
         self._logger = logger or logging.getLogger(__name__)
+        self._cache = cache if cache is not None else (None if http_client is not None else FilesystemCache())
 
     def __enter__(self) -> ArticleResolver:
         """Enter a context that closes an internally created HTTP client."""
@@ -117,9 +121,53 @@ class ArticleResolver:
             ArticleResolverError: If a requested source page is absent.
             ValueError: If requested languages cannot safely identify a source.
         """
+        requested_languages = _validate_languages(languages)
+        fields = {
+            "languages": requested_languages,
+            "operation": "resolve",
+            "query": query.model_dump(mode="json", by_alias=True),
+        }
+        cached = self._load_cached_resolution(query.mode, fields)
+        if cached is not None:
+            return cached
         if query.mode is QueryMode.ARTICLE:
-            return self.resolve_article(query.value, languages, source_language=query.source_language)
-        return self.resolve_topic(query.value, languages, article_overrides=query.article_overrides)
+            result: ArticleResolution | list[TopicResolution] = self.resolve_article(
+                query.value,
+                requested_languages,
+                source_language=query.source_language,
+            )
+        else:
+            result = self.resolve_topic(query.value, requested_languages, article_overrides=query.article_overrides)
+        if self._cache is not None:
+            payload = (
+                result.model_dump(mode="json")
+                if isinstance(result, ArticleResolution)
+                else [resolution.model_dump(mode="json") for resolution in result]
+            )
+            self._cache.store(CacheNamespace.RESOLUTION, fields, payload)
+        return result
+
+    def _load_cached_resolution(
+        self,
+        mode: QueryMode,
+        fields: Mapping[str, object],
+    ) -> ArticleResolution | list[TopicResolution] | None:
+        """Validate cached public resolution output before returning it to callers."""
+        if self._cache is None:
+            return None
+        payload = self._cache.load(CacheNamespace.RESOLUTION, fields, resolution_ttl())
+        if payload is None:
+            return None
+        try:
+            if mode is QueryMode.ARTICLE:
+                return ArticleResolution.model_validate(payload)
+            if not isinstance(payload, list):
+                raise ValueError("topic cache payload must be a list")
+            return [TopicResolution.model_validate(item) for item in payload]
+        except (ValidationError, ValueError):
+            self._cache.discard(CacheNamespace.RESOLUTION, fields)
+            self._logger.warning("Discarding malformed cached Wikipedia resolution")
+            return None
 
     def resolve_article(
         self,

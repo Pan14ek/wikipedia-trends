@@ -224,3 +224,20 @@ willingness to pay, country-level interest, or a product opportunity. Explicit
 report warnings, non-passing quality findings, and invalid cross-language
 comparison status appear in the reliability section. Detailed warnings remain
 in `analysis.json` when the PDF's bounded one-page layout truncates text.
+
+## M16 Local filesystem cache
+
+M16 caches successful raw Pageviews API payloads and validated public
+resolution results under `.cache/wikipedia` by default. The cache key is a
+SHA-256 digest of canonical JSON request dimensions. Article keys include
+project, article, start/end month, granularity, access, and agent; project keys
+include the equivalent project-level dimensions. `WIKIPEDIA_TRENDS_CACHE_DIR`
+optionally changes the cache root.
+
+Historical pageview data ending before the latest two complete months is fresh
+for 30 days. Data including either latest complete month is fresh for 24 hours.
+Resolution metadata is fresh for seven days. Entries use an atomic temporary
+file followed by replacement. Cache read/write errors, malformed JSON, invalid
+payloads, and stale entries are ignored so a live request can refill the cache.
+When collection uses the provenance-aware pageview API, its `retrieval` value
+is `network` or `cache` and can be copied directly to M14 source metadata.

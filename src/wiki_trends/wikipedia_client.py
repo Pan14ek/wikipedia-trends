@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from types import TracebackType
@@ -15,6 +16,7 @@ from urllib.parse import quote
 
 import httpx
 
+from wiki_trends.cache import CacheNamespace, CacheRetrieval, FilesystemCache, pageviews_ttl
 from wiki_trends.models import MonthlyPageview, ObservationStatus
 
 __all__ = [
@@ -23,6 +25,7 @@ __all__ = [
     "WikimediaPageviewsClient",
     "WikimediaRateLimitError",
     "WikimediaUnavailableError",
+    "PageviewsFetchResult",
 ]
 
 _ARTICLE_API_BASE_URL: Final = "https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article"
@@ -49,6 +52,14 @@ class WikimediaUnavailableError(WikimediaError):
     """Raised when a transient Wikimedia or transport failure cannot be recovered."""
 
 
+@dataclass(frozen=True)
+class PageviewsFetchResult:
+    """Calendar-complete pageviews together with their network/cache provenance."""
+
+    observations: list[MonthlyPageview]
+    retrieval: CacheRetrieval
+
+
 class WikimediaPageviewsClient:
     """Fetch complete monthly article and project pageview series from Wikimedia.
 
@@ -67,6 +78,7 @@ class WikimediaPageviewsClient:
         user_agent: str = _DEFAULT_USER_AGENT,
         sleep: Callable[[float], None] = time.sleep,
         logger: logging.Logger | None = None,
+        cache: FilesystemCache | None = None,
     ) -> None:
         """Initialize the client and its bounded retry policy.
 
@@ -77,6 +89,8 @@ class WikimediaPageviewsClient:
             user_agent: Value sent in every Wikimedia request.
             sleep: Delay function used between retry attempts.
             logger: Optional standard-library logger for retry diagnostics.
+            cache: Optional local cache. An injected HTTP client disables the
+                default cache unless a cache is explicitly supplied.
 
         Raises:
             ValueError: If timeout, attempts, or user agent is invalid.
@@ -95,6 +109,7 @@ class WikimediaPageviewsClient:
         self._user_agent = user_agent
         self._sleep = sleep
         self._logger = logger or logging.getLogger(__name__)
+        self._cache = cache if cache is not None else (None if http_client is not None else FilesystemCache())
 
     def __enter__(self) -> WikimediaPageviewsClient:
         """Enter a context that closes a client owned by this instance."""
@@ -135,24 +150,40 @@ class WikimediaPageviewsClient:
             WikimediaUnavailableError: If timeout, transport, or 5xx retries fail.
             WikimediaError: If Wikimedia returns another error or malformed data.
         """
+        return self.get_article_pageviews_result(project, article, start_month, end_month).observations
+
+    def get_article_pageviews_result(
+        self,
+        project: str,
+        article: str,
+        start_month: str,
+        end_month: str,
+    ) -> PageviewsFetchResult:
+        """Return article pageviews with explicit provenance for report sources."""
         validated_project = _require_nonblank_text(project, "project")
         validated_article = _require_nonblank_text(article, "article")
         start = _parse_month(start_month, "start_month")
         end = _parse_month(end_month, "end_month")
         if end < start:
             raise ValueError("'end_month' must not be earlier than 'start_month'")
+        fields = _article_cache_fields(validated_project, validated_article, start, end)
+        cached = self._load_cached_observations(CacheNamespace.ARTICLE_PAGEVIEWS, fields, start, end)
+        if cached is not None:
+            return PageviewsFetchResult(cached, "cache")
 
-        response = self._get_with_retries(
-            _build_endpoint(validated_project, validated_article, start, end),
+        payload = _response_payload(
+            self._get_with_retries(_build_endpoint(validated_project, validated_article, start, end))
         )
-        observations = _parse_observations(response)
-        return [
+        observations = _parse_observation_payload(payload)
+        self._store_payload(CacheNamespace.ARTICLE_PAGEVIEWS, fields, payload)
+        completed_observations = [
             observations.get(
                 month,
                 MonthlyPageview(month=month, status=ObservationStatus.UNKNOWN),
             )
             for month in _months_inclusive(start, end)
         ]
+        return PageviewsFetchResult(completed_observations, "network")
 
     def get_project_pageviews(
         self,
@@ -183,21 +214,64 @@ class WikimediaPageviewsClient:
             WikimediaUnavailableError: If timeout, transport, or 5xx retries fail.
             WikimediaError: If Wikimedia returns another error or malformed data.
         """
+        return self.get_project_pageviews_result(project, start_month, end_month).observations
+
+    def get_project_pageviews_result(
+        self,
+        project: str,
+        start_month: str,
+        end_month: str,
+    ) -> PageviewsFetchResult:
+        """Return project totals with provenance for normalized-interest sources."""
         validated_project = _require_nonblank_text(project, "project")
         start = _parse_month(start_month, "start_month")
         end = _parse_month(end_month, "end_month")
         if end < start:
             raise ValueError("'end_month' must not be earlier than 'start_month'")
+        fields = _project_cache_fields(validated_project, start, end)
+        cached = self._load_cached_observations(CacheNamespace.PROJECT_PAGEVIEWS, fields, start, end)
+        if cached is not None:
+            return PageviewsFetchResult(cached, "cache")
 
-        response = self._get_with_retries(_build_project_endpoint(validated_project, start, end))
-        observations = _parse_observations(response)
-        return [
-            observations.get(
-                month,
-                MonthlyPageview(month=month, status=ObservationStatus.UNKNOWN),
-            )
+        payload = _response_payload(self._get_with_retries(_build_project_endpoint(validated_project, start, end)))
+        observations = _parse_observation_payload(payload)
+        self._store_payload(CacheNamespace.PROJECT_PAGEVIEWS, fields, payload)
+        completed_observations = [
+            observations.get(month, MonthlyPageview(month=month, status=ObservationStatus.UNKNOWN))
             for month in _months_inclusive(start, end)
         ]
+        return PageviewsFetchResult(completed_observations, "network")
+
+    def _load_cached_observations(
+        self,
+        namespace: CacheNamespace,
+        fields: Mapping[str, object],
+        start: date,
+        end: date,
+    ) -> list[MonthlyPageview] | None:
+        """Read valid cached API payloads and discard malformed entries safely."""
+        if self._cache is None:
+            return None
+        payload = self._cache.load(namespace, fields, pageviews_ttl(end))
+        if payload is None:
+            return None
+        try:
+            observations = _parse_observation_payload(payload)
+            return [
+                observations.get(month, MonthlyPageview(month=month, status=ObservationStatus.UNKNOWN))
+                for month in _months_inclusive(start, end)
+            ]
+        except WikimediaError:
+            self._cache.discard(namespace, fields)
+            self._logger.warning(
+                "Discarding malformed cached Wikimedia pageviews", extra={"namespace": namespace.value}
+            )
+            return None
+
+    def _store_payload(self, namespace: CacheNamespace, fields: Mapping[str, object], payload: object) -> None:
+        """Store a successfully validated response when cache support is enabled."""
+        if self._cache is not None:
+            self._cache.store(namespace, fields, payload)
 
     def _get_with_retries(self, url: str) -> httpx.Response:
         for attempt in range(1, self._max_attempts + 1):
@@ -252,6 +326,31 @@ class WikimediaPageviewsClient:
         self._sleep(delay_seconds)
 
 
+def _article_cache_fields(project: str, article: str, start: date, end: date) -> dict[str, str]:
+    """Return every API dimension that can alter an article pageview response."""
+    return {
+        "access": "all-access",
+        "agent": "user",
+        "article": article,
+        "end": end.isoformat(),
+        "granularity": "monthly",
+        "project": project,
+        "start": start.isoformat(),
+    }
+
+
+def _project_cache_fields(project: str, start: date, end: date) -> dict[str, str]:
+    """Return every API dimension that can alter a project pageview response."""
+    return {
+        "access": "all-access",
+        "agent": "user",
+        "end": end.isoformat(),
+        "granularity": "monthly",
+        "project": project,
+        "start": start.isoformat(),
+    }
+
+
 def _build_endpoint(project: str, article: str, start: date, end: date) -> str:
     """Build the exact AQS per-article monthly endpoint for a date range."""
     encoded_project = quote(project, safe=".-")
@@ -272,12 +371,16 @@ def _build_project_endpoint(project: str, start: date, end: date) -> str:
     return f"{_PROJECT_API_BASE_URL}/{encoded_project}/all-access/user/monthly/{start_timestamp}/{end_timestamp}"
 
 
-def _parse_observations(response: httpx.Response) -> dict[date, MonthlyPageview]:
-    """Convert the API payload to validated records keyed by calendar month."""
+def _response_payload(response: httpx.Response) -> object:
+    """Read JSON once from a successful HTTP response before cache persistence."""
     try:
-        payload: object = response.json()
+        return response.json()
     except ValueError as error:
         raise WikimediaError("Wikimedia returned invalid JSON") from error
+
+
+def _parse_observation_payload(payload: object) -> dict[date, MonthlyPageview]:
+    """Convert a network or cache API payload to records keyed by calendar month."""
 
     if not isinstance(payload, Mapping):
         raise WikimediaError("Wikimedia response must be a JSON object")
