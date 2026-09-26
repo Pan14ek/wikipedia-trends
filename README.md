@@ -2,101 +2,267 @@
 
 A reproducible Agent Skill for analyzing Wikipedia pageview trends across articles, topics, and language editions.
 
-Wikipedia Trends resolves Wikipedia concepts, collects Wikimedia Pageviews data, computes transparent trend metrics, compares Wikipedia language editions, and can produce machine-readable JSON, PNG charts, and one-page PDF reports.
+Wikipedia Trends turns natural-language research questions into deterministic Wikipedia analyses using Wikimedia data, structured Wikipedia/Wikidata resolution, transparent metrics, explicit quality checks, and reproducible JSON, PNG, and PDF artifacts.
 
-It is designed for questions such as:
+The core design principle is simple:
 
-> “How has interest in astronomy changed in Ukrainian Wikipedia?”
-
-> “Compare interest in intermittent fasting in Polish and Czech Wikipedia over the last two years.”
-
-> “Compare interest in learning English across Polish, Czech, and Ukrainian Wikipedia.”
-
-> “Does this topic meet my minimum growth or normalized-interest threshold?”
-
-The skill combines agent orchestration with a deterministic Python analysis engine. The agent decides what analysis the user is asking for; Python owns concept resolution, data retrieval, calculations, validation, and report generation.
+> **The agent decides what analysis to run. Python owns calculations and correctness-critical decisions.**
 
 ---
 
-## Table of contents
+## Case overview
 
-- [What Wikipedia Trends does](#what-wikipedia-trends-does)
-- [What it does not tell you](#what-it-does-not-tell-you)
-- [How it works](#how-it-works)
-- [Installation](#installation)
-- [Quick start](#quick-start)
-- [Example questions](#example-questions)
-- [Analysis modes](#analysis-modes)
-- [Metrics](#metrics)
-- [Multi-language comparison](#multi-language-comparison)
-- [Topic resolution](#topic-resolution)
-- [Criteria and thresholds](#criteria-and-thresholds)
-- [Output artifacts](#output-artifacts)
-- [CLI](#cli)
-- [Configuration](#configuration)
-- [Understanding the results](#understanding-the-results)
-- [Follow-up analyses](#follow-up-analyses)
-- [Data source and cache](#data-source-and-cache)
-- [Project architecture](#project-architecture)
-- [Repository structure](#repository-structure)
-- [Development](#development)
-- [Testing](#testing)
-- [Specification-driven development](#specification-driven-development)
-- [Limitations](#limitations)
+The goal of this project was to build an Agent Skill that can answer questions about Wikipedia interest over time without relying on an LLM to manually search for pages, calculate metrics, or silently resolve ambiguous concepts.
 
----
+A naive agent-based implementation creates several risks:
 
-## What Wikipedia Trends does
+- the model may choose the wrong Wikipedia article;
+- equivalent articles in different languages may represent different concepts;
+- missing data may accidentally become zero;
+- the model may calculate its own percentages or rankings;
+- invalid comparisons may still be presented as valid;
+- Wikipedia traffic may be incorrectly interpreted as country-level or market demand.
 
-Wikipedia Trends turns a natural-language research question into a reproducible Wikipedia pageview analysis.
+Wikipedia Trends addresses these risks by separating agent orchestration from deterministic analysis.
 
-It can:
+```text
+Natural-language user request
+        ↓
+Agent Skill
+        ↓
+Validated AnalysisConfig
+        ↓
+Deterministic Python pipeline
+        ↓
+Wikipedia / Wikidata resolution
+        ↓
+Wikimedia Pageviews
+        ↓
+Metrics + quality checks
+        ↓
+Versioned report + artifacts
+        ↓
+Agent interpretation
+```
 
-- analyze one Wikipedia article over time;
-- analyze a broader topic represented by one or more Wikipedia articles;
-- compare the same concept across Wikipedia language editions;
-- measure absolute pageview attention;
-- calculate year-over-year growth;
-- normalize article or topic attention relative to total traffic in each Wikipedia edition;
-- detect unusual spikes;
-- calculate bootstrap confidence intervals for supported growth analysis;
-- evaluate explicit numeric thresholds;
-- distinguish requested data windows from actually available data;
-- preserve missing or unknown observations instead of silently converting them to zero;
-- generate JSON, PNG, and PDF artifacts;
-- preserve the exact resolved configuration so a later follow-up can modify the previous analysis reproducibly.
+The LLM is therefore not the analytical engine.
 
-Wikipedia Trends currently supports up to **20 Wikipedia language editions** in one analysis.
+It is the orchestration and explanation layer around a reproducible Python system.
 
 ---
 
-## What it does not tell you
+## Key design decisions
 
-Wikipedia pageviews are an **attention signal**.
+### 1. Python owns analytical calculations
 
-They are useful for studying how often Wikipedia content is viewed, how that attention changes over time, and how relative attention differs between Wikipedia editions.
+The agent must not independently calculate:
 
-They are not a direct measurement of:
+- percentages;
+- averages;
+- ratios;
+- trend values;
+- rankings;
+- streak lengths;
+- growth metrics.
 
+Every analytical number shown to the user must already exist in the Python-generated report.
+
+This prevents different models from inventing different definitions of the same metric.
+
+---
+
+### 2. Cross-language identity uses Wikidata
+
+Equivalent concepts across Wikipedia editions are resolved through structured Wikipedia and Wikidata relationships.
+
+The system does not rely on LLM-generated translations such as:
+
+```text
+English title
+→ model translation
+→ guessed Czech article
+```
+
+Instead:
+
+```text
+source Wikipedia concept
+→ Wikidata QID
+→ target-language sitelink
+```
+
+---
+
+### 3. Missing data is not zero
+
+Wikipedia Trends distinguishes:
+
+```text
+OBSERVED
+ZERO_INFERRED
+UNKNOWN
+```
+
+An unknown observation is never silently converted to:
+
+```text
+0 pageviews
+```
+
+because doing so would change totals, growth calculations, and comparisons.
+
+---
+
+### 4. Topic resolution is intentionally conservative
+
+For broader topics, the resolver prefers a false negative over a weak semantic match.
+
+If the evidence is insufficient, the system can return:
+
+```text
+requires_clarification
+```
+
+instead of selecting an approximately related article.
+
+---
+
+### 5. Invalid comparisons remain invalid
+
+A language-local analysis may still be useful even when a direct cross-language comparison is not valid.
+
+For example:
+
+```text
+Polish Wikipedia
+→ valid local metrics
+
+Ukrainian Wikipedia
+→ unresolved equivalent
+
+comparison
+→ comparable = false
+```
+
+The unresolved language is not silently removed.
+
+---
+
+### 6. Wikipedia language edition is not a country
+
+Traffic to:
+
+```text
+pl.wikipedia
+```
+
+means traffic to Polish-language Wikipedia.
+
+It does not automatically mean:
+
+```text
+demand in Poland
+```
+
+The same applies to all language editions.
+
+---
+
+### 7. Wikipedia attention is not market demand
+
+Wikipedia pageviews can be useful as an attention signal.
+
+They are not direct measurements of:
+
+- sales;
 - market size;
-- revenue opportunity;
 - purchase intent;
 - willingness to pay;
-- number of unique people;
+- unique people;
 - country-level demand;
 - future popularity.
 
-A Wikipedia language edition is also not the same thing as a country.
+---
 
-For example, traffic to Polish Wikipedia measures activity in the Polish-language Wikipedia project. It should not automatically be interpreted as demand from people physically located in Poland.
+## What Wikipedia Trends can do
 
-Wikipedia Trends deliberately keeps these distinctions visible in its reports.
+Wikipedia Trends can:
+
+- analyze a specific Wikipedia article over time;
+- analyze a broader topic represented by one or more articles;
+- compare equivalent concepts across Wikipedia language editions;
+- calculate absolute pageview metrics;
+- calculate supported year-over-year growth;
+- calculate deterministic within-window descriptive trends;
+- normalize attention relative to total Wikipedia-edition traffic;
+- detect unusual spikes;
+- calculate bootstrap confidence intervals for supported growth analysis;
+- evaluate explicit numerical thresholds;
+- report explicit data-quality checks;
+- preserve missing and unresolved observations;
+- generate JSON reports;
+- generate PNG trend charts;
+- generate one-page PDF reports;
+- continue previous analyses without silently changing unrelated parameters.
+
+Up to **20 Wikipedia language editions** can be requested in one analysis.
+
+---
+
+## Example questions
+
+### Single article
+
+```text
+How has interest in astronomy changed in Ukrainian Wikipedia?
+```
+
+### Multi-language comparison
+
+```text
+Compare interest in intermittent fasting in Polish and Czech Wikipedia
+over the last 24 complete months.
+```
+
+### Topic analysis
+
+```text
+Compare interest in learning English across Polish, Czech, and
+Ukrainian Wikipedia.
+```
+
+### Reliability-aware analysis
+
+```text
+Analyze interest in Nintendo Switch 2 over the last 12 complete months.
+Show the main metrics, explain the trend, and tell me how reliable the
+conclusion is.
+```
+
+### Explicit threshold
+
+```text
+Check whether normalized interest is at least 25 pageviews per
+1 million Wikipedia pageviews.
+```
+
+### Follow-up analysis
+
+```text
+Add Ukrainian Wikipedia to the previous comparison.
+```
+
+or:
+
+```text
+Keep everything else the same, but use 36 months.
+```
 
 ---
 
 ## How it works
 
-At a high level:
+The Agent Skill uses progressive workflow selection.
 
 ```text
 User request
@@ -104,29 +270,40 @@ User request
     ▼
 SKILL.md
     │
-    ├── determine whether the skill applies
-    ├── run preflight checks
-    └── select relevant workflows
+    ├── determine whether the Skill applies
+    ├── inspect required inputs
+    └── choose relevant workflows
             │
             ▼
 references/workflows/*
             │
             ▼
-Build AnalysisConfig
+AnalysisConfig
             │
             ▼
-Wikipedia Trends CLI
+scripts/run.py
+installed-Skill runtime bootstrap
             │
-            ├── Wikipedia / Wikidata resolution
-            ├── Wikimedia Pageviews collection
-            ├── deterministic Python analytics
-            └── report generation
+            ▼
+scripts/analyze.py
+CLI contract
+            │
+            ▼
+src/wiki_trends/
+            │
+            ├── resolution
+            ├── data collection
+            ├── analytics
+            ├── normalization
+            ├── quality checks
+            ├── comparisons
+            └── reporting
                     │
                     ▼
         analysis.json / PNG / PDF
                     │
                     ▼
-           artifact validation
+        result interpretation
                     │
                     ▼
               user response
@@ -134,23 +311,41 @@ Wikipedia Trends CLI
 
 The separation is intentional.
 
-The **agent** handles request interpretation, workflow selection, clarification, and explanation.
+### Agent responsibilities
 
-The **Python implementation** owns correctness-critical operations such as:
+The agent handles:
 
-- article and topic resolution;
-- Wikidata concept mapping;
-- pageview collection;
+- interpreting the user request;
+- selecting article or topic mode;
+- choosing workflows;
+- identifying source and target languages;
+- building a valid configuration;
+- asking for clarification when necessary;
+- executing the Skill;
+- reading generated results;
+- explaining limitations.
+
+### Python responsibilities
+
+Python owns:
+
+- article resolution;
+- topic resolution;
+- Wikidata identity mapping;
+- Pageviews collection;
 - aggregation;
-- normalization;
+- absolute metrics;
 - growth calculations;
+- descriptive trend calculations;
+- normalized interest;
 - anomaly detection;
 - confidence intervals;
 - threshold evaluation;
-- cross-language comparison;
-- report generation.
-
-The agent must not recreate these calculations manually.
+- data-quality checks;
+- multi-language comparison;
+- chart generation;
+- PDF generation;
+- versioned report generation.
 
 ---
 
@@ -158,95 +353,83 @@ The agent must not recreate these calculations manually.
 
 ### Install as an Agent Skill
 
-If you use an Agent Skills-compatible installer:
+Using an Agent Skills-compatible installer:
 
 ```bash
 npx skills add Pan14ek/wikipedia-trends
 ```
 
-The skill is centered around `SKILL.md`, with additional workflow and methodology references under `references/`.
+The installed Skill requires:
 
-Once installed, ask your agent a Wikipedia trend question in natural language.
-The installed Skill runs through `scripts/run.py`, which requires Python 3.12+
-and creates or reuses its dependency runtime in the user cache (or the
-`WIKIPEDIA_TRENDS_RUNTIME_DIR` you set). The launcher does not write to the
-installed Skill directory and reads pinned runtime dependencies from
-`requirements-runtime.lock`.
+```text
+Python >= 3.12
+```
 
-For example:
+For installed Skills, execution goes through:
+
+```text
+scripts/run.py
+```
+
+The launcher creates or reuses a cached runtime outside the installed Skill directory.
+
+This means the Skill can work even when its installation directory is read-only.
+
+Runtime dependencies are pinned through:
+
+```text
+requirements-runtime.lock
+```
+
+and the launcher also redirects runtime caches such as Matplotlib configuration to writable user-cache locations.
+
+After installation, the user can simply ask a natural-language question such as:
 
 ```text
 Compare interest in intermittent fasting in Polish and Czech Wikipedia
 over the last two years.
 ```
 
-The agent should select the appropriate workflow, build the analysis configuration, execute the project CLI, inspect the generated report, and return the validated result.
+---
 
-### Clone for local development or direct CLI use
+## Local development
+
+Clone the repository:
 
 ```bash
 git clone https://github.com/Pan14ek/wikipedia-trends.git
 cd wikipedia-trends
 ```
 
-Wikipedia Trends requires **Python 3.12 or newer**.
-
-Install the project and development dependencies:
+Install development dependencies:
 
 ```bash
 python -m pip install -e ".[dev]"
 ```
 
-Then verify the CLI:
+Verify the low-level CLI:
 
 ```bash
 python scripts/analyze.py --help
+```
+
+Or verify the installed-Skill launcher:
+
+```bash
+python3 scripts/run.py --help
 ```
 
 ---
 
 ## Quick start
 
-### Using an AI agent
-
-After installing the skill, you can ask:
-
-```text
-Analyze astronomy interest in Ukrainian Wikipedia over the last 24 months.
-```
-
-The skill will determine the required configuration and run the analysis through the project CLI.
-
-A request may involve several workflows. For example:
-
-```text
-Compare learning English across Polish, Czech, and Ukrainian Wikipedia
-over the last two years.
-```
-
-may involve:
-
-```text
-topic analysis
-+
-multi-language comparison
-+
-period selection
-+
-artifact validation
-```
-
-The user does not need to know those internal workflow names.
-
-### Using the CLI directly
-
-An example configuration already exists at:
+An example configuration is available at:
 
 ```text
 examples/astronomy-uk.json
 ```
 
-Run it with:
+Run it through the local development CLI:
 
 ```bash
 python scripts/analyze.py \
@@ -254,7 +437,15 @@ python scripts/analyze.py \
   --output-dir output
 ```
 
-A successful CLI run prints one machine-readable JSON object:
+For installed-Skill execution:
+
+```bash
+python3 scripts/run.py \
+  --config examples/astronomy-uk.json \
+  --output-dir output
+```
+
+A successful analysis returns exactly one machine-readable CLI payload:
 
 ```json
 {
@@ -268,7 +459,7 @@ A successful CLI run prints one machine-readable JSON object:
 }
 ```
 
-Disabled outputs are represented explicitly:
+Disabled or unavailable outputs remain explicit:
 
 ```json
 {
@@ -280,73 +471,19 @@ Disabled outputs are represented explicitly:
 }
 ```
 
-See [`references/cli.md`](references/cli.md) for the complete execution contract.
+CLI process success does not automatically mean that every requested semantic result is valid.
 
----
-
-## Example questions
-
-### Single article
-
-```text
-Show me the Wikipedia pageview trend for astronomy in Ukrainian Wikipedia.
-```
-
-### Multiple language editions
-
-```text
-Compare intermittent fasting in Polish and Czech Wikipedia over the last
-24 months.
-```
-
-### Topic analysis
-
-```text
-Analyze interest in learning English in Polish, Czech, and Ukrainian Wikipedia.
-```
-
-### Growth
-
-```text
-How has interest changed year over year?
-```
-
-### Explicit criteria
-
-```text
-Check whether normalized interest is at least 150 pageviews per million
-Wikipedia pageviews.
-```
-
-### Exact period
-
-```text
-Analyze this topic between 2026-01-01 and 2026-08-31.
-```
-
-### Follow-up
-
-After an existing analysis:
-
-```text
-Add Ukrainian Wikipedia to the previous comparison.
-```
-
-or:
-
-```text
-Keep everything else the same, but use the last 36 months.
-```
+The generated report must still be inspected.
 
 ---
 
 ## Analysis modes
 
-Wikipedia Trends supports two query modes.
+Wikipedia Trends supports two analysis modes.
 
 ### Article mode
 
-Use article mode when the subject corresponds to one specific Wikipedia concept or article.
+Use article mode when the request refers to one specific Wikipedia concept.
 
 Example:
 
@@ -357,19 +494,35 @@ Example:
     "value": "Astronomy",
     "source_language": "en"
   },
-  "languages": ["en", "uk"]
+  "languages": ["uk"]
 }
 ```
 
-The resolver identifies the canonical source article and maps equivalent articles to requested language editions through structured Wikipedia and Wikidata links.
+This means:
 
-It does not rely on LLM-generated title translations.
+```text
+resolve "Astronomy" in English Wikipedia
+        ↓
+identify its canonical concept
+        ↓
+map it to Ukrainian Wikipedia
+        ↓
+analyze Ukrainian Wikipedia
+```
 
-If the requested title is ambiguous, the analysis can return a structured clarification state instead of silently selecting a meaning.
+`source_language` identifies the Wikipedia edition in which the supplied phrase is interpreted.
+
+It is independent from the editions listed in:
+
+```text
+languages
+```
+
+---
 
 ### Topic mode
 
-Use topic mode when the request describes a broader subject that may be represented by one or more Wikipedia articles.
+Topic mode is used for a broader concept that may require multiple Wikipedia articles.
 
 Example:
 
@@ -380,146 +533,11 @@ Example:
     "value": "learning English",
     "source_language": "en"
   },
-  "languages": ["en", "pl", "cs", "uk"]
+  "languages": ["pl", "cs", "uk"]
 }
 ```
 
-Topic mode performs semantic candidate selection in the source-language Wikipedia and establishes a canonical concept set using Wikidata identities.
-
-The selected concepts are then mapped to other Wikipedia editions using Wikidata sitelinks.
-
-The resolver deliberately prefers an unresolved result over silently selecting a weak semantic match.
-
----
-
-## Metrics
-
-Wikipedia Trends keeps different measurements separate instead of collapsing them into one synthetic score.
-
-### Absolute pageviews
-
-Basic traffic measurements are calculated from known observations, including period totals and summary statistics.
-
-Missing observations are not silently treated as zero.
-
-### Year-over-year growth
-
-For supported monthly analyses, Wikipedia Trends compares calendar-aligned periods.
-
-The primary YoY calculation is:
-
-```text
-YoY % = ((recent period / previous period) - 1) × 100
-```
-
-Insufficient or structurally non-comparable data produces an explicit unavailable status rather than a fabricated percentage.
-
-### Descriptive window trend
-
-The report includes Python-generated within-window endpoint direction and
-change, adjacent-change counts, the ending consecutive streak, and peak/trough
-observations. Endpoint change is not YoY growth. Agents use those report fields
-directly and do not derive trend numbers from raw pageviews.
-
-### Normalized interest
-
-Absolute pageviews are difficult to compare directly across Wikipedia editions because the projects have different total traffic.
-
-Wikipedia Trends can normalize topic or article traffic against total traffic in its own Wikipedia edition:
-
-```text
-normalized interest =
-article or topic pageviews
-────────────────────────── × 1,000,000
-total project pageviews
-```
-
-The result is expressed as:
-
-```text
-pageviews per 1,000,000 Wikipedia project pageviews
-```
-
-This provides a scale-aware signal for comparing relative attention across language editions.
-
-It is still not country-level market demand.
-
-### Anomaly detection
-
-Wikipedia Trends can detect unusual traffic spikes using robust statistical methods.
-
-Anomalies are reported separately so one large event does not silently distort the interpretation of the longer-term trend.
-
-### Confidence intervals
-
-For supported monthly YoY analysis, Wikipedia Trends can calculate a deterministic bootstrap interval around the observed growth estimate.
-
-The interval describes uncertainty in the observed Wikipedia pageview series under the implemented bootstrap procedure.
-
-It is not uncertainty about market demand.
-
-### Quality checks
-
-Reports include explicit quality checks rather than a hidden confidence score.
-
-Quality information can cover areas such as:
-
-- completeness;
-- period sufficiency;
-- article resolution;
-- trend consistency;
-- spike sensitivity;
-- comparison validity.
-
-Checks are reported with explicit statuses such as:
-
-```text
-pass
-warning
-fail
-not_evaluated
-```
-
----
-
-## Multi-language comparison
-
-Wikipedia Trends can compare between **2 and 20 Wikipedia language editions**.
-
-A valid cross-language comparison requires more than simply having traffic numbers for several pages.
-
-The system tracks whether:
-
-- the requested concept resolved in each language;
-- the compared concepts are equivalent;
-- sufficient shared observations exist;
-- the available periods overlap correctly;
-- normalized values are available when requested.
-
-Language-local metrics may still exist even when a direct comparison is invalid.
-
-For example:
-
-```text
-Czech edition:
-local metrics available
-
-but
-
-comparison_equivalent = false
-```
-
-means those metrics can be discussed locally, but they must not be included in a like-for-like comparison with the canonical topic.
-
-Wikipedia Trends does not emit a synthetic “best market” ranking.
-
----
-
-## Topic resolution
-
-Topic resolution is one of the most correctness-sensitive parts of the project.
-
-The current topic-mode flow is:
+Topic resolution follows:
 
 ```text
 topic phrase
@@ -528,39 +546,279 @@ source-language Wikipedia search
     ↓
 deterministic semantic evidence
     ↓
-accepted canonical source concept(s)
+accepted canonical concepts
     ↓
 Wikidata QIDs
     ↓
 target-language sitelinks
 ```
 
-MediaWiki search rank is used for discovery and deterministic ordering, but a highly ranked result is not automatically considered semantically relevant.
+Search rank alone is not sufficient evidence of semantic relevance.
 
-Candidate evidence can include:
+---
 
-- canonical article title;
-- Wikidata label;
-- Wikidata aliases;
-- Wikidata description;
-- token coverage;
-- source language;
-- fallback metadata language;
-- Wikidata QID.
+## Source language vs target languages
 
-If evidence is insufficient or materially ambiguous, the resolver returns a structured clarification state.
+These are intentionally separate concepts.
 
-### Missing equivalents
+```text
+source_language
+=
+the Wikipedia language in which query.value is interpreted
 
-If a canonical concept has no corresponding sitelink in one requested Wikipedia edition, Wikipedia Trends does not automatically search that edition for a “similar enough” replacement.
+languages
+=
+the Wikipedia editions whose metrics should be analyzed
+```
 
-The mapping stays unresolved.
+For example:
 
-### Proxies
+```json
+{
+  "query": {
+    "mode": "article",
+    "value": "Astronomy",
+    "source_language": "en"
+  },
+  "languages": ["uk"]
+}
+```
 
-A user may explicitly approve another article as a proxy.
+does not request English Wikipedia metrics.
 
-When this happens, the selected proxy is resolved and its Wikidata concept set is compared with the canonical source concept set.
+English is only the resolution source.
+
+For multi-language requests, `source_language` is required.
+
+---
+
+## Metrics
+
+Wikipedia Trends deliberately keeps measurements separate instead of combining them into one opaque score.
+
+### Absolute pageviews
+
+The system reports values such as:
+
+- total pageviews;
+- mean pageviews per bucket;
+- median pageviews;
+- maximum;
+- minimum;
+- completeness.
+
+Missing values remain explicit.
+
+---
+
+### Year-over-year growth
+
+For supported monthly analysis:
+
+```text
+YoY % =
+((recent 12-month total / previous 12-month total) - 1) × 100
+```
+
+The latest two calendar-aligned 12-month windows are used.
+
+If there is not enough comparable data:
+
+```text
+growth_pct = null
+status = insufficient_data
+```
+
+The agent must not calculate its own replacement percentage.
+
+---
+
+### Descriptive window trend
+
+A shorter analysis window may still contain useful descriptive trend evidence even when YoY cannot be calculated.
+
+Python can report:
+
+- first observation;
+- last observation;
+- endpoint direction;
+- endpoint percentage change;
+- positive adjacent changes;
+- negative adjacent changes;
+- unchanged adjacent changes;
+- ending consecutive streak;
+- peak;
+- trough.
+
+For example:
+
+```text
+direction = lower_at_end
+endpoint_change_pct = -32.1%
+ending_streak = decrease / 2 intervals
+```
+
+An endpoint change is a description of the selected analysis window.
+
+It is **not YoY growth**.
+
+The agent uses these generated fields directly and must not reconstruct them from raw pageviews.
+
+---
+
+### Normalized interest
+
+Different Wikipedia editions have very different total traffic.
+
+To make relative attention more comparable:
+
+```text
+normalized interest =
+article or topic pageviews
+────────────────────────── × 1,000,000
+total project pageviews
+```
+
+Unit:
+
+```text
+pageviews per 1,000,000 project pageviews
+```
+
+This adjusts for Wikipedia-edition scale.
+
+It does not transform Wikipedia readership into country-level demand.
+
+---
+
+### Anomaly detection
+
+Wikipedia Trends uses robust statistical methods to detect unusual pageview observations.
+
+Anomalies are reported separately from trend metrics.
+
+They are not automatically interpreted as caused by:
+
+- a product release;
+- news;
+- seasonality;
+- marketing;
+- external events.
+
+Causal explanations require additional evidence.
+
+---
+
+### Confidence intervals
+
+For supported monthly YoY analysis, Wikipedia Trends can calculate a deterministic paired bootstrap confidence interval.
+
+The interval describes variation in the observed pageview series under the implemented statistical procedure.
+
+It does not represent confidence about:
+
+- market demand;
+- sales;
+- willingness to pay;
+- product success.
+
+---
+
+## Quality checks
+
+Instead of producing a hidden numerical confidence score, Wikipedia Trends reports explicit quality checks.
+
+Current checks include:
+
+```text
+completeness
+period_sufficiency
+article_resolution
+trend_consistency
+spike_sensitivity
+comparison_validity
+```
+
+Each check has one of:
+
+```text
+pass
+warning
+fail
+not_evaluated
+```
+
+For example:
+
+```text
+completeness = pass
+period_sufficiency = warning
+article_resolution = pass
+comparison_validity = not_evaluated
+```
+
+The agent describes these checks directly rather than converting them into an invented score such as:
+
+```text
+Reliability: 8/10
+```
+
+---
+
+## Multi-language comparison
+
+Wikipedia Trends supports comparisons across **2–20 Wikipedia language editions**.
+
+A valid comparison requires more than simply having pageview values.
+
+The system checks:
+
+- whether every requested equivalent resolved;
+- whether concepts are equivalent;
+- local completeness;
+- shared known periods;
+- normalized-data availability where relevant;
+- explicit comparison validity.
+
+A comparison can therefore produce:
+
+```text
+local metrics = available
+comparison.comparable = false
+```
+
+This is valid behavior.
+
+Local evidence is preserved without pretending that a like-for-like comparison exists.
+
+---
+
+## Missing language equivalents
+
+If the canonical Wikidata concept does not have a corresponding article in a requested edition:
+
+```text
+missing equivalent
+→ unresolved
+```
+
+The system does not automatically search the target language for something “similar enough”.
+
+It also does not create:
+
+```text
+0 pageviews
+```
+
+for the missing edition.
+
+---
+
+## Proxy articles
+
+A user may explicitly approve an alternative article as a proxy.
+
+The selected proxy still has its Wikidata identity checked.
 
 If:
 
@@ -568,15 +826,15 @@ If:
 comparison_equivalent = false
 ```
 
-the proxy can still have language-local metrics, but it cannot be presented as a direct like-for-like measurement of the original topic.
+its local metrics may be reported, but it is excluded from a like-for-like comparison.
 
 ---
 
 ## Criteria and thresholds
 
-Wikipedia Trends can evaluate explicit numeric criteria.
+Wikipedia Trends can evaluate explicit numerical criteria.
 
-Supported threshold metrics currently include:
+Supported threshold metrics include:
 
 ```text
 growth_pct
@@ -602,13 +860,13 @@ Example:
       "name": "normalized interest floor",
       "metric": "normalized_interest_mean",
       "operator": "gte",
-      "threshold": 150
+      "threshold": 25
     }
   ]
 }
 ```
 
-Each criterion is evaluated independently as:
+Possible states:
 
 ```text
 met
@@ -616,33 +874,41 @@ not_met
 not_evaluable
 ```
 
-`not_evaluable` is not treated as either success or failure.
+`not_evaluable` is neither success nor failure.
 
-Wikipedia Trends does not combine individual criteria into a hidden opportunity score.
+---
 
 ### Growth thresholds
 
-There is an important distinction between standard YoY analysis and an explicit growth threshold.
+A normal monthly YoY analysis does not require the user to manually provide a baseline.
 
-Normal monthly YoY analysis can be enabled with:
+However, an explicit threshold such as:
 
-```json
-{
-  "criteria": {
-    "growth": true
-  }
-}
+```text
+Did this topic grow by at least 10%?
 ```
 
-An explicit `growth_pct` threshold requires an explicit comparison period with matching granularity and length.
+requires a clear comparison baseline.
 
-The system does not invent that baseline.
+The system must not invent that baseline.
 
 ---
 
 ## Output artifacts
 
-Each output type is independently configurable.
+Wikipedia Trends supports:
+
+```text
+JSON
+PNG
+PDF
+```
+
+The default output configuration enables all supported artifacts.
+
+If the user does not specify output preferences, the agent should omit the `output` section and allow `AnalysisConfig` defaults to apply.
+
+Example:
 
 ```json
 {
@@ -654,15 +920,17 @@ Each output type is independently configurable.
 }
 ```
 
+---
+
 ### JSON report
 
-The machine-readable report currently uses:
+The current report schema is:
 
 ```text
-schema_version: 2.2.0
+schema_version = 2.2.0
 ```
 
-A report contains information such as:
+Major report sections include:
 
 ```text
 input
@@ -679,111 +947,107 @@ warnings
 artifacts
 ```
 
-The report's `input` contains the resolved configuration used for the run, including exact dates. This makes later follow-up analysis reproducible.
+The exact resolved input is stored in the report so follow-up analyses can reproduce the previous state.
 
-See [`references/output-schema.md`](references/output-schema.md).
+See:
+
+[`references/output-schema.md`](references/output-schema.md)
+
+---
 
 ### PNG charts
 
 For multi-language analysis:
 
 ```text
-2–6 languages
-→ one shared comparison chart
+2–6 analyzable languages
+→ shared comparison chart
 
-7–20 languages
+7–20 analyzable languages
 → separate per-language charts
 ```
 
-Unknown observations appear as gaps rather than artificial zero values.
+Unknown observations are rendered as gaps rather than artificial zero values.
 
-### PDF report
+If only part of a multi-language request resolves, presentation artifacts may still be generated from valid analyzable series while the JSON report preserves the unresolved state.
 
-Wikipedia Trends can generate a one-page A4 PDF containing a compact shareable summary.
+---
 
-The PDF is intentionally bounded. Detailed machine-readable results and warnings remain available in `analysis.json` when JSON output is enabled.
+### PDF
+
+Wikipedia Trends can produce a compact one-page A4 PDF.
+
+The PDF is intended as a shareable summary.
+
+The JSON report remains the authoritative detailed machine-readable result.
 
 ---
 
 ## CLI
 
-The installed-Skill entry point is `scripts/run.py`; `scripts/analyze.py`
-remains the lower-level development entry point.
+### Installed Skill
+
+Use:
 
 ```bash
-python3 scripts/run.py \
+python3 <skill-root>/scripts/run.py \
   --config <config.json> \
   --output-dir <output-dir>
 ```
 
-The launcher caches a venv outside the Skill root, installs the reproducible
-runtime export, and directs Matplotlib caches to a writable user-cache path.
-The runtime lock is generated from the checked-in `uv.lock` with:
+`scripts/run.py` is a bootstrap layer for installed Skills.
+
+It:
+
+- requires Python 3.12+;
+- uses a writable runtime directory;
+- reuses cached dependencies;
+- does not install the project in editable mode;
+- does not write to the Skill directory;
+- provides writable cache locations;
+- preserves the underlying CLI exit-code and stdout contract.
+
+---
+
+### Low-level development CLI
+
+For a local development checkout:
 
 ```bash
-UV_CACHE_DIR=/tmp/wikipedia-trends-uv-cache uv export --locked --package wikipedia-trends \
-  --no-dev --no-emit-project --format requirements.txt --no-annotate --no-header \
-  -o requirements-runtime.lock
+python scripts/analyze.py \
+  --config <config.json> \
+  --output-dir <output-dir>
 ```
 
-### Arguments
-
-| Argument | Description |
-|---|---|
-| `--config <FILE>` | Path to a JSON `AnalysisConfig`. Required. |
-| `--output-dir <DIR>` | Root directory for generated artifacts. |
-| `--help` | Display CLI usage without running an analysis. |
-
-Agents are instructed to always pass `--output-dir` explicitly so the current run's artifact location is unambiguous.
+---
 
 ### Exit codes
 
 | Exit code | Meaning |
 |---|---|
-| `0` | The pipeline completed. |
-| `1` | Analysis/runtime failure. |
-| `2` | Configuration or CLI usage failure. |
+| `0` | Pipeline execution completed |
+| `1` | Analysis/runtime failure |
+| `2` | Configuration or CLI usage failure |
 
-An exit code of `0` does **not** mean that the requested concept necessarily resolved successfully or that a direct comparison is valid.
+Exit `0` means that execution completed.
 
-The generated report may still contain:
+It does **not** imply:
 
 ```text
-requires_clarification
-comparison.comparable = false
-not_evaluable
-quality warnings
-unresolved language mappings
-truncated data availability
+every article resolved
+every language resolved
+comparison is valid
+every criterion is evaluable
+all quality checks passed
 ```
 
-This distinction is important for agent reliability.
-
-### CLI protocol
-
-Successful runs expose a machine-readable protocol:
-
-```json
-{
-  "cli_schema_version": "1.0.0",
-  "status": "success",
-  "analysis_json": "...",
-  "charts": ["..."],
-  "pdf": "..."
-}
-```
-
-Application-controlled configuration and analysis failures are emitted as structured JSON on `stderr`.
-
-For the full execution lifecycle, recovery rules, path handling, and artifact semantics, see:
-
-[`references/cli.md`](references/cli.md)
+Those states are represented inside the report.
 
 ---
 
 ## Configuration
 
-A complete example:
+Example:
 
 ```json
 {
@@ -796,23 +1060,13 @@ A complete example:
   "period": {
     "months": 24,
     "granularity": "monthly"
-  },
-  "criteria": {
-    "growth": true,
-    "normalized_interest": true,
-    "stability": true,
-    "anomalies": true,
-    "confidence_intervals": true
-  },
-  "output": {
-    "json": true,
-    "charts": true,
-    "pdf": true
   }
 }
 ```
 
-The following sections can be omitted when their defaults are appropriate:
+When omitted, stable defaults are applied.
+
+The following sections can normally be omitted when their defaults are appropriate:
 
 ```text
 period
@@ -820,15 +1074,17 @@ criteria
 output
 ```
 
-When the user has not specified JSON, chart, or PDF preferences, omit the
-`output` object and let those defaults apply. Follow-up analyses retain the
-previous report's frozen output settings unless the user requests a change.
+Default period:
 
-The default analysis period is the latest **24 complete calendar months**.
+```text
+latest 24 complete calendar months
+```
 
-### Exact dates
+---
 
-Exact inclusive date windows are also supported:
+### Exact date windows
+
+Exact inclusive dates are supported:
 
 ```json
 {
@@ -839,24 +1095,9 @@ Exact inclusive date windows are also supported:
 }
 ```
 
-Partial calendar-month windows default to daily granularity.
-
 Full calendar-month windows default to monthly granularity.
 
-### Source language
-
-`source_language` identifies the edition used to resolve the supplied title or
-topic phrase, while `languages` selects editions to analyze. For example,
-`source_language: "en"` with `languages: ["uk"]` resolves an English phrase
-and analyzes Ukrainian Wikipedia.
-
-Multi-language requests require `source_language`. For a one-language request,
-runtime inference is safe only when the phrase is intentionally expressed in
-that target edition's language.
-
-For the complete configuration contract, see:
-
-[`references/input-schema.md`](references/input-schema.md)
+Partial-month windows default to daily granularity.
 
 ---
 
@@ -864,7 +1105,7 @@ For the complete configuration contract, see:
 
 ### Requested period vs available period
 
-The report distinguishes:
+Wikipedia Trends distinguishes:
 
 ```text
 requested_period
@@ -876,176 +1117,207 @@ from:
 period
 ```
 
-The first is what was requested.
+The first represents what was requested.
 
-The second is what was actually available from the data source.
+The second represents what was actually available for analysis.
 
-Wikipedia Trends does not fill unavailable recent observations with estimated values.
+Unavailable observations are not fabricated.
 
-### Unknown is not zero
+---
 
-Missing observations are represented explicitly.
+### UNKNOWN is not zero
 
 ```text
-UNKNOWN
-≠
-0 pageviews
+UNKNOWN ≠ 0
 ```
 
-This distinction is preserved through downstream calculations.
+This rule is preserved through aggregation, growth calculations, comparisons, and reports.
 
-For a topic consisting of multiple selected articles, a topic bucket becomes unknown if any required component is unknown.
+---
 
 ### Pageviews are not unique readers
 
-Wikipedia pageviews count page visits, not unique users.
+Wikipedia Pageviews measures page visits.
 
-When a topic is represented by several articles, a person may visit more than one selected article. Summed topic pageviews can therefore contain overlapping audiences.
+A single person may generate multiple views.
+
+Topic-mode aggregation may also include the same person viewing several selected articles.
+
+---
 
 ### Language edition is not country
 
-Metrics always refer to a Wikipedia language edition.
-
-They should not automatically be converted into statements such as:
+Statements such as:
 
 ```text
-“Poland has more demand than Czechia.”
+Polish Wikipedia has higher normalized interest.
 ```
 
-without separate evidence.
+may be supported.
 
-### Proxy evidence
+Statements such as:
 
-A proxy measures the selected proxy article or article set.
+```text
+People in Poland want this product more.
+```
 
-It is not silently presented as measurement of the original topic.
+are not supported by Wikipedia pageviews alone.
+
+---
+
+### Descriptive trend is not growth
+
+For a 12-month analysis:
+
+```text
+the period ended 32% lower than it began
+```
+
+may be a valid Python-produced descriptive endpoint result.
+
+It must not become:
+
+```text
+YoY growth = -32%
+```
+
+unless the report actually contains a valid YoY metric.
 
 ---
 
 ## Follow-up analyses
 
-Wikipedia Trends supports reproducible follow-up requests.
-
-For example, after:
-
-```text
-Compare intermittent fasting in Polish and Czech Wikipedia over the last
-24 months.
-```
-
-you can ask:
-
-```text
-Add Ukrainian Wikipedia.
-```
-
-The agent should use the previous report's:
+A follow-up starts from the previous report's frozen configuration:
 
 ```text
 analysis.json.input
 ```
 
-as the current configuration state.
+Example initial request:
 
-Only explicitly requested fields are changed.
+```text
+Compare intermittent fasting in Polish and Czech Wikipedia
+over the last 24 months.
+```
 
-Importantly, relative periods are already frozen to exact dates in the previous report. A follow-up therefore does not silently move “the last 24 months” to a different calendar window unless the user asks to change the period.
+Follow-up:
+
+```text
+Add Ukrainian Wikipedia.
+```
+
+Only the requested field changes.
+
+Another follow-up:
+
+```text
+Keep everything else the same, but use 36 months.
+```
+
+The period changes, while unrelated configuration remains stable.
+
+Relative date requests from the original analysis are already frozen to exact dates, so time does not silently shift between follow-ups.
 
 ---
 
-## Data source and cache
+## Data sources
 
-Wikipedia Trends uses public Wikimedia services for resolution and pageview data, including:
+Wikipedia Trends uses public Wikimedia services:
 
-- Wikipedia / MediaWiki;
+- MediaWiki;
 - Wikidata;
-- Wikimedia Analytics Pageviews.
+- Wikimedia Analytics Pageviews API.
 
-Pageview analysis uses Wikimedia's standard human-reader metric:
+Pageview analysis uses:
 
 ```text
 access = all-access
 agent = user
 ```
 
-### Local cache
+This follows Wikimedia's standard human-reader Pageviews metric rather than bot traffic.
 
-Successful raw Pageviews responses and validated public resolution data are cached locally by default under:
+---
+
+## Cache
+
+Raw Pageviews responses and validated public resolution data can be cached locally.
+
+Default analysis cache:
 
 ```text
 .cache/wikipedia
 ```
 
-Set:
+Custom location:
 
 ```bash
 WIKIPEDIA_TRENDS_CACHE_DIR=/custom/path
 ```
 
-to use another cache location.
+The installed runtime itself is cached separately from the Skill installation.
 
-The cache is an optimization, not an authoritative source.
+A cache entry is an optimization, not the authoritative analytical result.
 
-Stale, corrupted, malformed, or unusable cache entries are ignored and can be replaced by live data.
-
-Reports record whether relevant evidence came from:
-
-```text
-network
-```
-
-or:
-
-```text
-cache
-```
+Malformed or unusable cache data is not silently accepted.
 
 ---
 
 ## Project architecture
 
-Wikipedia Trends separates orchestration from deterministic analysis.
-
 ```text
-┌─────────────────────────────────────┐
-│              SKILL.md               │
-│ activation, routing, global rules   │
-└──────────────────┬──────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────┐
-│        references/workflows/        │
-│ article / topic / comparison / ...  │
-└──────────────────┬──────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────┐
-│             AnalysisConfig          │
-│       references/input-schema.md    │
-└──────────────────┬──────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────┐
-│          scripts/analyze.py         │
-│              CLI 1.0.0              │
-└──────────────────┬──────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────┐
-│          src/wiki_trends/           │
-│ resolver / collection / analytics   │
-│ comparison / quality / reporting    │
-└──────────────────┬──────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────┐
-│ JSON report / PNG charts / PDF      │
-└─────────────────────────────────────┘
+┌───────────────────────────────────────┐
+│               User                    │
+└───────────────────┬───────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────┐
+│              SKILL.md                 │
+│ activation / rules / routing          │
+└───────────────────┬───────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────┐
+│       references/workflows/           │
+│ request-specific workflows            │
+└───────────────────┬───────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────┐
+│            AnalysisConfig             │
+└───────────────────┬───────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────┐
+│            scripts/run.py             │
+│ installed-Skill runtime bootstrap     │
+└───────────────────┬───────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────┐
+│          scripts/analyze.py           │
+│            CLI 1.0.0                  │
+└───────────────────┬───────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────┐
+│          src/wiki_trends/             │
+│                                       │
+│ resolution                            │
+│ collection                            │
+│ analytics                             │
+│ normalization                         │
+│ quality                               │
+│ comparison                            │
+│ reporting                             │
+└───────────────────┬───────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────┐
+│ analysis.json / PNG / PDF             │
+│ report schema 2.2.0                   │
+└───────────────────────────────────────┘
 ```
-
-The main design principle is:
-
-> The agent decides what workflow to run. Python owns calculations and correctness-critical runtime decisions.
 
 ---
 
@@ -1053,9 +1325,15 @@ The main design principle is:
 
 ```text
 wikipedia-trends/
-├── SKILL.md
 ├── README.md
+├── SKILL.md
 ├── pyproject.toml
+├── uv.lock
+├── requirements-runtime.lock
+│
+├── scripts/
+│   ├── run.py
+│   └── analyze.py
 │
 ├── references/
 │   ├── cli.md
@@ -1071,10 +1349,8 @@ wikipedia-trends/
 │       ├── criteria-and-thresholds.md
 │       ├── follow-up-analysis.md
 │       ├── proxy-resolution.md
-│       └── artifact-validation.md
-│
-├── scripts/
-│   └── analyze.py
+│       ├── artifact-validation.md
+│       └── result-interpretation.md
 │
 ├── src/
 │   └── wiki_trends/
@@ -1090,65 +1366,31 @@ wikipedia-trends/
 │
 └── docs/
     └── sdd/
+        ├── ...
+        ├── M24-unresolved-partial-artifact-resilience.md
+        ├── M25-deterministic-interpretation-quality-runtime-hardening.md
+        └── M18.1-inexpensive-model-revalidation-after-remediation.md
 ```
 
-### Documentation responsibilities
+---
 
-| File | Purpose |
+## Documentation responsibilities
+
+| File | Responsibility |
 |---|---|
-| `SKILL.md` | Agent activation, orchestration, invariants, and workflow routing |
-| `references/cli.md` | Agent-facing execution lifecycle and CLI contract |
-| `references/input-schema.md` | Valid analysis configuration |
-| `references/output-schema.md` | Machine-readable JSON report contract |
-| `references/methodology.md` | Metric definitions, resolution rules, and methodological limits |
+| `SKILL.md` | Agent activation, invariants, orchestration, workflow routing |
+| `references/cli.md` | CLI lifecycle and execution contract |
+| `references/input-schema.md` | Analysis configuration |
+| `references/output-schema.md` | Versioned report schema |
+| `references/methodology.md` | Metric and methodology definitions |
 | `references/workflows/*` | Request-specific operational workflows |
-| `docs/sdd/*` | Specification-driven development history and milestone contracts |
+| `docs/sdd/*` | Specification-driven development milestones |
 
 ---
 
-## Development
+## Testing and verification
 
-Requires:
-
-```text
-Python >= 3.12
-```
-
-Runtime dependencies include:
-
-```text
-httpx
-matplotlib
-pydantic
-reportlab
-```
-
-Development dependencies include:
-
-```text
-pytest
-mypy
-ruff
-pypdf
-```
-
-Install:
-
-```bash
-python -m pip install -e ".[dev]"
-```
-
-Run CLI help:
-
-```bash
-python scripts/analyze.py --help
-```
-
----
-
-## Testing
-
-Run the test suite:
+Run the deterministic test suite:
 
 ```bash
 python -m pytest
@@ -1166,121 +1408,180 @@ Type checking:
 mypy
 ```
 
-Check whitespace errors:
+Check whitespace and patch integrity:
 
 ```bash
 git diff --check
 ```
 
-The default automated suite uses mocked HTTP for deterministic tests.
+The deterministic suite uses mocked HTTP where appropriate.
 
-A live Wikimedia run is useful as a smoke test but should not be treated as deterministic CI evidence because external data and network conditions can change.
+Live Wikimedia requests can be useful as smoke tests, but they are not used as the only evidence for correctness because external services and live traffic change over time.
 
-The test suite includes coverage for:
+Tests cover areas including:
 
 - configuration validation;
-- Wikimedia pageview collection;
 - article resolution;
-- topic semantic resolution;
-- aggregation;
+- topic resolution;
+- Pageviews collection;
+- missing-data semantics;
+- absolute metrics;
+- YoY;
+- descriptive trends;
 - normalization;
-- growth;
 - anomalies;
-- confidence intervals;
-- quality checks;
+- bootstrap intervals;
+- quality propagation;
+- multi-language comparison;
+- partial resolution;
 - charts;
 - PDF generation;
 - CLI protocol;
-- multi-language comparisons;
-- multi-chart output;
+- installed-Skill runtime bootstrap;
+- follow-up configuration;
 - end-to-end scenarios.
 
 ---
 
-## Specification-driven development
+## Specification-Driven Development
 
-Wikipedia Trends is developed using Specification-Driven Development.
+The project was built using Specification-Driven Development.
 
-Milestone specifications live under:
+Each major milestone has a specification under:
 
 ```text
 docs/sdd/
 ```
 
-The project was built incrementally through specifications covering areas such as:
+The development flow is:
+
+```text
+specification
+    ↓
+implementation
+    ↓
+verification
+    ↓
+next milestone
+```
+
+The specifications cover:
 
 ```text
 project skeleton
 configuration
-Wikimedia client
+Wikimedia collection
 article resolution
 metrics
-quality
+charts
+quality checks
 normalization
-anomalies
+anomaly detection
 confidence intervals
 topic mode
 multi-language comparison
-reporting
+JSON reporting
+PDF reporting
 cache
 E2E scenarios
 agent evaluation
 flexible periods
 topic correctness remediation
-skill orchestration
-agent-friendly CLI execution
+Skill orchestration
+CLI lifecycle
+source-language semantics
+partial-resolution resilience
+deterministic interpretation
+installed-Skill runtime hardening
 ```
 
 See:
 
 [`docs/sdd/INDEX.md`](docs/sdd/INDEX.md)
 
-for the current specification index.
+---
+
+## Current project status
+
+The core Wikipedia Trends implementation is complete.
+
+Recent remediation work added:
+
+- deterministic descriptive trend fields;
+- stronger agent interpretation rules;
+- quality-state propagation;
+- an installed-Skill runtime launcher;
+- read-only Skill installation support;
+- runtime dependency locking;
+- stronger cross-model safeguards against manual agent analytics.
+
+The remaining project-level acceptance step is:
+
+```text
+WT-M18.1
+Inexpensive-model revalidation
+```
+
+That evaluation is intended to validate the final Skill behavior on fresh model sessions after the latest remediation.
+
+Pre-remediation exploratory model runs are treated as diagnostic evidence, not as final acceptance results.
 
 ---
 
-## Limitations
+## Known limitations
 
 Wikipedia Trends intentionally keeps its scope narrow.
 
 Current limitations include:
 
-- Wikipedia pageviews are an attention signal, not a market-demand measurement;
-- language editions cannot be equated directly with countries;
-- topic totals may contain overlapping readers across selected articles;
-- semantic resolution is deliberately conservative and may ask for clarification instead of forcing a weak match;
-- not every Wikipedia concept exists in every language edition;
-- proxy articles may provide local evidence without being valid for direct comparison;
-- recent Wikimedia data can be incomplete or unavailable;
-- the project does not currently forecast future popularity;
-- the project does not estimate purchase intent, willingness to pay, revenue, or total addressable market.
+- Wikipedia pageviews are attention signals, not market-demand measurements;
+- pageviews are not unique users;
+- a Wikipedia language edition is not a country;
+- topic aggregates may contain overlapping readers;
+- semantic resolution is conservative and may require clarification;
+- not every concept exists in every Wikipedia language edition;
+- a proxy article may provide local evidence without being equivalent for direct comparison;
+- 12 months are not sufficient for the standard two-window YoY analysis;
+- recent or historical Wikimedia data can contain missing observations;
+- Wikipedia Trends does not explain causal reasons for traffic changes;
+- it does not forecast future popularity;
+- it does not estimate revenue, sales, willingness to pay, purchase intent, or total addressable market;
+- it does not produce an opaque opportunity or reliability score.
 
-These constraints are intentional. The goal is reproducible evidence with explicit limitations rather than an opaque recommendation score.
+These constraints are deliberate.
+
+The goal is reproducible evidence with explicit uncertainty and limitations rather than an unsupported recommendation.
 
 ---
 
-## Further reference
+## Further documentation
 
-For agent orchestration:
+Agent orchestration:
 
 [`SKILL.md`](SKILL.md)
 
-For CLI execution:
+CLI execution:
 
 [`references/cli.md`](references/cli.md)
 
-For configuration:
+Configuration:
 
 [`references/input-schema.md`](references/input-schema.md)
 
-For report structure:
+Report schema:
 
 [`references/output-schema.md`](references/output-schema.md)
 
-For methodology:
+Methodology:
 
 [`references/methodology.md`](references/methodology.md)
 
-For development specifications:
+Specification index:
 
 [`docs/sdd/INDEX.md`](docs/sdd/INDEX.md)
+
+---
+
+## License
+
+MIT
